@@ -4,6 +4,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/chaterm/token-verifier/internal/rawdata"
 )
 
 // 退出码（README / DATAFLOW §3.6）
@@ -36,6 +38,9 @@ func run(args []string) int {
 	case "-h", "--help", "help":
 		usage()
 		return exitOK
+	case "-v", "--version", "version":
+		fmt.Printf("tv %s\n", rawdata.ToolVersion)
+		return exitOK
 	default:
 		fmt.Fprintf(os.Stderr, "ERROR  未知命令 %q\n\n", args[0])
 		usage()
@@ -53,6 +58,8 @@ func usage() {
       从配置的端点采集一份 rawData（联网，支持续跑）
   tv run [flags] <baseline.rawdata.jsonl.gz>
       采集 + 与基线比较一条命令完成（联网）
+  tv version
+      打印版本（即写进 rawData manifest 的 tool_version）
 
 compare 的 flags:
   -c, --config <file>        配置文件（读 thresholds 段）
