@@ -1,0 +1,162 @@
+# 示例题库 v1（suites/v1.example.yaml）
+# 覆盖全部五个探针：onetoken / tokenizer / needle / think-effort / toolcall，
+# 每个探针只留最少量的示例题目，演示题库的全部配置项。
+#
+# 规则（docs/SPEC-SUITE.md）：
+# - 题目 id 跨 suite 必须全局唯一；自定义题库请用自己的前缀（如 mycorp.ot.001）
+# - 改题目文本必须递增 suite_version；增删题目会自动改变 question_set_digest
+# - 正式采集建议参考 docs/SPEC-SUITE.md 自建更充足的题库（每探针题目越多，
+#   分布指纹与统计检验越稳）
+suite_version: v1
+
+# 输出契约（docs/SPEC-SUITE.md §5）：凡生效 normalize ≠ none 的探针/题目，
+# 采集时自动注入下面的 system prompt，要求模型只回答 {"answer": "<your answer>"}；
+# 观测端先按 field 做三级容错 JSON 解包（剥围栏 → 整段解析 → 截取片段），
+# 失败回退原文归一化。normalize = none 的探针（如 tokenizer，观测
+# usage.prompt_tokens）不受影响、不发送 system prompt。
+# 契约文本进 plan_digest：两侧契约不一致会被 compare 闸门拒绝。
+# 单一文本，不做多语言变体；需要改措辞直接改这里。
+output_contract:
+  field: answer
+  system_prompt: '请只回答一个合法的 JSON 对象，格式为 {"answer": "<your answer>"}，不要输出其它任何内容。其中值必须是简短的单一答案（一个词或一个数字），不要解释。'
+
+# 归一化空间：词表由题库提供，不写死在程序内（docs/SPEC-SUITE.md §4）。
+# 机理规则（number/letter/word/none 的提取算法）在代码里；
+# 词表规则在这里定义，normalize 引用名字即生效，也可自定义新规则。
+# 词表经采集计划进入 plan_digest：改词表 = 改观测语义，两侧不一致会被闸门拒绝。
+normalize:
+  maps:
+    # color：多语言颜色词 → 规范色名。匹配大小写不敏感、最长同义词优先。
+    # 自定义词表规则照这个形态写即可。
+    color:
+      red:    [red, crimson, scarlet, 红, 红色, 大红, rouge, rot, rojo, rosso]
+      blue:   [blue, navy, azure, 蓝, 蓝色, 天蓝, 深蓝, bleu, blau, azul, azzurro]
+      green:  [green, lime, olive, 绿, 绿色, 草绿, vert, grün, verde]
+      yellow: [yellow, gold, amber, 黄, 黄色, 金黄, jaune, gelb, amarillo, giallo]
+      black:  [black, 黑, 黑色, noir, schwarz, negro, nero]
+      white:  [white, 白, 白色, blanc, weiß, blanco, bianco]
+  # digits/letters 可在此扩展 number 与 letter 规则的字符表（如带圈数字、变音字母）。
+
+probes:
+  # onetoken：极短答案取值分布（主指纹）。
+  # 数字题（number 归一化）分布信息量最大；辅以字母、颜色题演示词表规则。
+  # 采集参数（repeats/temperature）在配置文件里，不在这里。
+  onetoken:
+    normalize: number
+    thinking_effort: null
+    items:
+      - id: ot.example.001
+        prompt: "说出一个 1 到 100 之间的随机整数，只输出这个数字。"
+      - id: ot.example.002
+        prompt: "Pick a random integer between 1 and 100. Output only the number."
+      # 题目级 normalize 覆盖探针级缺省，可任选 number/letter/word/none
+      # 或本库 normalize.maps 里定义的词表规则
+      - id: ot.example.003
+        prompt: "随机说一个英文字母，只输出这个字母。"
+        normalize: letter
+      - id: ot.example.004
+        prompt: "Name a random color. Output only the color name."
+        normalize: color
+
+  # tokenizer：输入侧指纹（服务端上报的输入 token 数）。
+  # 题目刻意覆盖分词难点：CJK、emoji、全角、谚文、数学字母、JSON 结构。
+  # repeats=1 即可（同一分词器对同一文本切分确定）。
+  tokenizer:
+    normalize: none
+    thinking_effort: null
+    items:
+      - id: tk.example.001
+        prompt: "重复以下内容一次：こんにちは、🎉、ｕｌｌｗｉｄｔｈ。"
+      - id: tk.example.002
+        prompt: "重复以下内容一次：全角ＡＢＣ１２３与中文混排文本。"
+      - id: tk.example.003
+        prompt: "Repeat after me: naïve café résumé, don't we? It's coöperate."
+
+  # needle：长上下文完整性（docs/PROBES.md）。标记由 (题目 id, 位置序号)
+  # 确定性派生，不以明文出现在本文件 —— 题库只声明埋点的相对位置。
+  # 一个位置 = 一个埋点 = 比较侧一个统计单元；一个埋点在其 cell 的全部
+  # repeats 中都被召回才算「命中」，命中埋点数进 2×2 卡方。
+  # 采集参数（repeats / context_buckets）在配置文件里。
+  needle:
+    normalize: none
+    thinking_effort: null
+    items:
+      - id: nd.example.001
+        prompt: "上文里埋了若干个标记，每处都附了「读到该标记请原样输出」的指令。请按出现顺序逐行输出你找到的全部标记。"
+        # 埋点位置为占语料长度的比例，须在 (0,1) 开区间内；
+        # 错开位置可定位「从哪个深度开始丢」
+        needle_positions: [0.25, 0.61, 0.73, 0.91]
+
+  # think-effort：思考行为（docs/PROBES.md）。观测服务端上报的思考 token 数，
+  # 按题目上的强度级别（low/medium/high）分组比较。强度是符号级别，
+  # 各协议在配置的 effort_map 里映射成自己的具体值。
+  # 题目用多步逻辑推理题：思考预算被削减时，推理质量与思考长度都会露馅。
+  think-effort:
+    normalize: none
+    items:
+      - id: te.example.001
+        prompt: |
+          已知有以下条件：
+          1. 大多数看过报告的代表都持积极态度。
+          2. 没有两个代表是同时阅读报告的，他们可能对报告有不同的看法。
+          3. 没有一个代表用不到半天的时间就能阅读完报告。
+          4. 代表共有16人。
+
+          请判断：代表们花了一周多的时间阅读了报告，大多数人认为它很有价值。（对/错/无法判断）
+          先仔细思考，再给出结论。
+        thinking_effort: low
+      - id: te.example.002
+        prompt: |
+          已知有以下条件：
+          1. 灰狗赛跑是一项观众可以对灰狗下注的竞技运动。
+          2. 猎兔是灰狗赛跑的一部分。
+          3. 观众可以下注的竞技运动是被禁止的。
+          4. 猎兔涉及观众对被灰狗追赶的野兔下注。
+          5. 野兔是小型猎物。
+          6. 如果一项竞技运动涉及观众对小型猎物下注，那么它将被禁止。
+
+          请判断：猎兔没有被禁止。（对/错/无法判断）
+          先仔细思考，再给出结论。
+        thinking_effort: high
+
+  # toolcall：agent 行为（docs/PROBES.md）。工具完全虚构 —— 比的是两侧的
+  # 工具选择分布与参数合法率的一致性，模型不认识这些工具没有关系。
+  # 工具集刻意设计了易混淆对（weather 双工具），放大选择偏好的差异。
+  # 工具可声明在探针级（如下）或题目级（覆盖继承）。
+  toolcall:
+    normalize: none
+    thinking_effort: null
+    tools:
+      - name: get_weather
+        description: 获取某城市当前的实时天气
+        parameters:
+          type: object
+          properties:
+            city: { type: string, description: 城市名 }
+          required: [city]
+      - name: get_forecast
+        description: 获取某城市未来若干天的天气预报
+        parameters:
+          type: object
+          properties:
+            city: { type: string, description: 城市名 }
+            days: { type: integer, description: 预报天数，1-7 }
+          required: [city, days]
+      - name: unit_convert
+        description: 单位换算（温度、长度、重量等）
+        parameters:
+          type: object
+          properties:
+            value: { type: number, description: 待换算数值 }
+            from_unit: { type: string }
+            to_unit: { type: string }
+          required: [value, from_unit, to_unit]
+    items:
+      - id: tc.example.001
+        prompt: "北京现在多少度？"
+      # expect_parallel: true 提示该题预期并行调用多个工具（仅作统计提示）
+      - id: tc.example.002
+        prompt: "上海和广州哪个更热？分别查一下。"
+        expect_parallel: true
+      - id: tc.example.003
+        prompt: "把 72 华氏度换算成摄氏度。"

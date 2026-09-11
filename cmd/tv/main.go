@@ -1,0 +1,83 @@
+// tv 是 Token Verifier 的命令行入口：compare（离线比较）、collect（采集）、run（采集+比较）。
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+// 退出码（README / DATAFLOW §3.6）
+const (
+	exitOK           = 0 // 全部探针 pass
+	exitFail         = 1 // 至少一个探针 fail
+	exitUsage        = 2 // 用法错误、配置非法、缺阈值
+	exitIncompat     = 3 // 采集计划不兼容，拒绝比较
+	exitCollect      = 4 // 采集阶段致命错误（端点不可达、续跑计划不一致、输出不可写）
+	exitInconclusive = 5 // 无 fail，但存在 inconclusive 探针：判定不完整，不能被当作「全部通过」消费
+)
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
+// run 路由子命令，返回退出码。
+func run(args []string) int {
+	if len(args) == 0 {
+		usage()
+		return exitUsage
+	}
+	switch args[0] {
+	case "compare":
+		return cmdCompare(args[1:])
+	case "collect":
+		return cmdCollect(args[1:])
+	case "run":
+		return cmdRun(args[1:])
+	case "-h", "--help", "help":
+		usage()
+		return exitOK
+	default:
+		fmt.Fprintf(os.Stderr, "ERROR  未知命令 %q\n\n", args[0])
+		usage()
+		return exitUsage
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `Token Verifier — 验证 LLM API 端点是否提供其声称的模型与配置
+
+用法:
+  tv compare [flags] <A.rawdata.jsonl.gz> <B.rawdata.jsonl.gz>
+      读两个 rawData 文件，逐探针给出判定（完全离线）
+  tv collect [flags]
+      从配置的端点采集一份 rawData（联网，支持续跑）
+  tv run [flags] <baseline.rawdata.jsonl.gz>
+      采集 + 与基线比较一条命令完成（联网）
+
+compare 的 flags:
+  -c, --config <file>        配置文件（读 thresholds 段）
+  --threshold <probe>=<v>    直接给阈值，可重复；优先于配置文件
+  -v, --verbose              追加证据明细：逐 cell 分布直方图与传输分布对比
+  --json <file>              另写 JSON 报告（始终含全量 cell 明细与直方图数据）
+  --junit <file>             另写 JUnit XML 报告
+  --log-level <level>        日志级别 debug|info|warn|error（默认 info）
+
+collect 的 flags:
+  -c, --config <file>        配置文件（必填）
+  -o <file>                  输出 rawData 路径（必填）
+  --dry-run                  只印请求数与 token 估算，不发请求
+  --log-level <level>        日志级别 debug|info|warn|error（默认 info）
+
+run 的 flags:
+  -c, --config <file>        配置文件（必填）
+  --threshold <probe>=<v>    同 compare
+  -v, --verbose              同 compare
+  --json / --junit <file>    同 compare
+  --keep-rawdata             保留临时 rawData（默认采集完即删）
+  --log-level <level>        日志级别 debug|info|warn|error（默认 info）
+
+退出码:
+  0 全部 pass · 1 有 fail · 2 用法/配置/缺阈值 · 3 采集计划不兼容
+  4 采集阶段致命错误 · 5 无 fail 但有 inconclusive 探针
+`)
+}

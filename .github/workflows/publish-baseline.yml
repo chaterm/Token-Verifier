@@ -1,0 +1,105 @@
+name: Publish Baseline
+
+# 发布官方基线（题库 + rawData 成对）。手动触发：
+#   1. 先在官方端点用待发布题库采集，得到 <model>.rawdata.jsonl.gz
+#   2. Actions 页面选 "Publish Baseline" 运行，上传题库与 rawData 两个文件
+#   3. workflow 校验 raw_level=digest（full 级禁止发布）、manifest 可解析后，
+#      自动创建 baseline-<tag> release 并附上题库快照、rawData、SHA256SUMS
+#
+# tag 命名建议：baseline-<model>-suite<vN>（如 baseline-glm-5.3-suitev3）
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（baseline-<model>-suite<vN>）'
+        required: true
+        type: string
+      model:
+        description: '模型名（写进 release 标题与说明）'
+        required: true
+        type: string
+      notes:
+        description: '补充说明（采集窗口、特殊背景等，可留空）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Validate and publish baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download uploaded artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: _in
+
+      - name: Locate suite and rawData files
+        id: files
+        run: |
+          suite=$(find _in -name '*.yaml' | head -1)
+          raw=$(find _in -name '*.rawdata.jsonl.gz' | head -1)
+          [ -n "$suite" ] || { echo "::error::未找到题库 yaml"; exit 1; }
+          [ -n "$raw" ] || { echo "::error::未找到 rawData 文件"; exit 1; }
+          echo "suite=$suite" >> "$GITHUB_OUTPUT"
+          echo "raw=$raw" >> "$GITHUB_OUTPUT"
+
+      - name: Validate rawData is publishable (digest level)
+        run: |
+          # 解出 manifest（第 1 行 JSON）并做发布前门禁：
+          # 1. raw_level 必须是 digest —— full 级含原始输出文本，禁止发布
+          # 2. kind / format_version 齐全，防手滑传错文件
+          manifest=$(zcat "${{ steps.files.outputs.raw }}" | head -1)
+          kind=$(echo "$manifest" | jq -r '.kind')
+          level=$(echo "$manifest" | jq -r '.raw_level')
+          fv=$(echo "$manifest" | jq -r '.format_version')
+          tool=$(echo "$manifest" | jq -r '.tool_version')
+          echo "manifest: kind=$kind format_version=$fv tool_version=$tool raw_level=$level"
+          [ "$kind" = "rawdata" ] || { echo "::error::第 1 行不是 rawData manifest"; exit 1; }
+          [ "$level" = "digest" ] || { echo "::error::raw_level=$level，只有 digest 级可发布（full 含原始输出文本）"; exit 1; }
+
+      - name: Stage release assets
+        run: |
+          mkdir -p _out
+          cp "${{ steps.files.outputs.suite }}" "_out/suite.yaml"
+          cp "${{ steps.files.outputs.raw }}" "_out/official.rawdata.jsonl.gz"
+          ( cd _out && sha256sum suite.yaml official.rawdata.jsonl.gz > SHA256SUMS )
+          cat _out/SHA256SUMS
+
+      - name: Compute suite sha256 (for suite.path pinning)
+        id: sha
+        run: |
+          suite_sha=$(sha256sum "${{ steps.files.outputs.suite }}" | cut -d' ' -f1)
+          echo "suite sha256 = $suite_sha"
+          echo "sha=$suite_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create baseline release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: Baseline — ${{ inputs.model }}
+          body: |
+            官方基线数据：${{ inputs.model }}
+
+            | 项 | 值 |
+            |---|---|
+            | 模型 | ${{ inputs.model }} |
+            | 题库 | suite.yaml（sha256 见 SHA256SUMS） |
+            | 题库 sha256（suite.sha256 pin 用） | `${{ steps.sha.outputs.sha }}` |
+            | rawData | official.rawdata.jsonl.gz（digest 级） |
+
+            使用方式：
+            1. 下载本 release 全部文件
+            2. 配置文件 `suite.path` 指向 suite.yaml，`suite.sha256` 填 `${{ steps.sha.outputs.sha }}`
+            3. `tv run -c <你的配置> official.rawdata.jsonl.gz`
+
+            探针参数须与采集计划一致才能通过 digest 闸门，具体见
+            manifest 的 collection_plan 字段与 docs/BASELINES.md。
+
+            ${{ inputs.notes }}
+          files: |
+            _out/suite.yaml
+            _out/official.rawdata.jsonl.gz
+            _out/SHA256SUMS

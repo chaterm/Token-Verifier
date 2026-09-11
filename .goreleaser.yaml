@@ -1,0 +1,58 @@
+version: 2
+
+project_name: token-verifier
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tv
+    main: ./cmd/tv
+    binary: tv
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      # 把版本注入 internal/rawdata.ToolVersion（写进 rawData manifest），
+      # -s -w 去符号表减小体积
+      - -s -w -X github.com/chaterm/token-verifier/internal/rawdata.ToolVersion={{.Version}}
+
+archives:
+  - id: tv
+    builds: [tv]
+    # tv-v1.0.0_linux_amd64.tar.gz / .zip
+    name_template: >-
+      tv-{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    # 示例配置与题库随二进制打包：解压即可 --dry-run
+    files:
+      - config.example.yaml
+      - suites/v1.example.yaml
+
+checksum:
+  name_template: 'SHA256SUMS'
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  draft: true
+  prerelease: auto
+  name_template: 'Token-Verifier {{ .Version }}'

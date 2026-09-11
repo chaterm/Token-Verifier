@@ -1,0 +1,34 @@
+# 构建产物
+/bin/
+/dist/
+/tv
+/tv.exe
+*.exe
+*.test
+*.out
+
+# 依赖与本地校验工具
+node_modules/
+.mmtmp/
+.mermaid-check.mjs
+
+# 本地采集产物与草稿
+out/
+*.rawdata.jsonl.gz
+*.local.yaml
+.env
+
+# 本地测试用的配置与题库（仓库只随附 config.example.yaml
+# 与 suites/v1.example.yaml 两个示例文件）
+config.*.yaml
+!config.example.yaml
+suites/*
+!suites/v1.example.yaml
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.zcode/
+*.swp

@@ -1,0 +1,166 @@
+# Token-Verifier 配置文件示例（模型无关）
+#
+# 用法：
+#   export TARGET_API_KEY=sk-...          # 密钥只从环境变量读，不写进本文件
+#   tv collect -c config.example.yaml -o candidate.rawdata.jsonl.gz --dry-run
+#   tv run -c config.example.yaml official.rawdata.jsonl.gz
+#
+# 完整 schema 与校验规则见 docs/SPEC-CONFIG.md。
+# 标注「进 digest」的字段影响采到什么样的数据：两侧不一致时比较会被
+# digest 闸门拒绝。标注「不进 digest」的只影响耗时与判定，可自由调整。
+
+version: 1                    # 配置格式版本，必须为 1
+
+# ── 待测端点（collect / run 需要；compare 不需要）────────────────────────
+# 整个 target 段都不进 digest —— 它是「往哪个网关、用什么拼写把实验发出去」的
+# 接线细节，同一套实验在不同网关上的写法不该被闸门拒绝。
+# manifest 只落密钥与主机名的指纹，不暴露端点身份。
+target:
+  base_url: https://your-gateway.example.com   # 换成你的网关 / 厂商端点
+  api_key_env: TARGET_API_KEY   # 只写环境变量名；rawData 中仅落 8 位指纹
+  model: your-model-name        # 换成待测模型名
+
+  protocols:
+    # 各协议按 weight 切分 repeats（比例分配，不放大总请求数）。
+    # capabilities / thinking / weight / transport 均不进 digest：
+    # 裁剪与折算效果记录在 manifest 的 sampling / skipped，两侧对不上只出 NOTE。
+    # 每题「用哪个思考档位」由题目级 thinking_effort 承载（随题库进 digest），
+    # effort_map 只是该档位在本网关上的翻译。
+    # 按需保留你网关实际支持的协议，删掉用不到的即可。
+    - id: openai-chat
+      path: /v1/chat/completions
+      weight: 1
+      capabilities: { stream: true, tools: true, thinking: true, context_window: 128000 }
+      transport: { stream: 0.5, non_stream: 0.5 }
+      thinking:
+        disabled:
+          body_overrides:
+            reasoning_effort: none      # 换成你的网关关闭思考的字段写法
+        enabled:
+          # 题目声明符号级别（low/medium/high），各协议自己映射到厂商字段。
+          # 厂商字段名是移动目标，一律经 body_overrides 提供，不写死在工具里。
+          effort_map: { low: low, medium: medium, high: high }
+          body_overrides:
+            reasoning_effort: "${thinking_effort}"
+
+    # 注意：anthropic-messages 的 usage 无独立思考 token 字段，think-effort
+    # 探针对本协议改用交付的思考文本字数做观测（unit=chars），cell 按协议
+    # 分层、不与 tokens 混比。协议 weight 小时记得 repeats 要配够 min_n。
+    - id: anthropic-messages
+      path: /v1/messages
+      weight: 1
+      capabilities: { stream: true, tools: true, thinking: true, context_window: 200000 }
+      transport: { stream: 1.0, non_stream: 0.0 }
+      thinking:
+        disabled:
+          body_overrides:
+            thinking:
+              type: disabled
+        enabled:
+          effort_map: { low: low, medium: medium, high: high }
+          body_overrides:
+            thinking:
+              type: enabled
+              budget_tokens: "${thinking_effort}"
+
+    # Responses 风格端点（POST {base}/responses，input 数组 + output 数组）。
+    # 适配器默认在请求体带 reasoning: {effort: high, summary: auto}，
+    # 需要其它档位/关闭时经 enabled.body_overrides 覆盖 reasoning 字段即可。
+    # 思考 token 数从 usage.output_tokens_details.reasoning_tokens 归一。
+    - id: openai-responses
+      path: /v1/responses
+      weight: 1
+      capabilities: { stream: true, tools: true, thinking: true, context_window: 128000 }
+      transport: { stream: 0.5, non_stream: 0.5 }
+      thinking:
+        disabled:
+          body_overrides:
+            reasoning:
+              effort: none
+        enabled:
+          effort_map: { low: low, medium: medium, high: high }
+          body_overrides:
+            reasoning:
+              effort: "${thinking_effort}"
+              summary: auto
+
+  request:
+    # 温度的点路径（厂商把温度放在嵌套字段里时改这里）。不进 digest：
+    # 它只是温度值放哪里的路由，温度的值已随 probes.<id>.temperature 进 digest。
+    temperature_field: temperature
+    # 全局附加请求体字段；不许覆盖保留字段（model/messages/input/system/tools）。
+    # 约束：只用于网关接线兼容（厂商特有字段），别用它塞语义采样参数
+    # （top_k / seed 之类）——那种差异会逃过 digest 闸门。
+    body_overrides: {}
+
+# ── 题库：一律外部文件，工具不内置（docs/SPEC-SUITE.md）─────────────────
+suite:
+  path: ./suites/v1.example.yaml   # 仓库随附的示例题库，可直接用或复制后自定义
+  # sha256: ...               # 可选；给了则加载时必须校验通过
+
+# ── 探针采集参数（全部进 digest）────────────────────────────────────────
+probes:
+  onetoken:
+    enabled: true
+    repeats: 10               # 每 cell 总请求数，按协议/传输比例切分
+    temperature: 1.0          # < 0.5 会警告：分布可能退化
+    context_buckets: [0, 8000]   # 0 = 不加填充；须严格递增
+    min_n: 10                 # 可选，缺省 10：单侧有效样本下限，
+                              # 不足的 cell 在比较时标 insufficient 剔除
+
+  tokenizer:
+    enabled: true
+    repeats: 1
+    temperature: 0.0
+    max_tokens: 16
+    context_buckets: [0]
+    min_n: 1                  # 可选，缺省 1（tokenizer 单样本即可判相等）
+
+  needle:
+    enabled: true
+    repeats: 3                # 二值观测噪声大：每埋点单元两侧各 ≥3 样本
+    temperature: 0.0
+    max_tokens: 256           # 多埋点题要求逐行输出全部标记，留出余量
+    context_buckets: [32000, 128000]   # 分档位定位召回拐点；按模型上下文窗口裁剪
+    min_n: 1                  # 可选，缺省 1（埋点单元级下限）
+
+  think-effort:
+    enabled: true
+    repeats: 3                # 思考量波动大，需要样本估分布；cell 按协议分层，
+                              # 每协议份额 = repeats × weight，须 ≥ min_n 才参与检验
+    temperature: 1.0
+    context_buckets: [0, 8000]
+    # 强度级别（low/medium/high）写在题目上，不在这里
+    min_n: 1                  # 可选，缺省 5
+
+  toolcall:
+    enabled: true
+    repeats: 10
+    temperature: 1.0
+    context_buckets: [0]
+    min_n: 5                  # 可选，缺省 5
+
+# ── 比较判据（compare / run 必填；工具不提供默认值，不进 digest）────────
+thresholds:
+  onetoken: 0.15              # 分布距离（JSD）上限，越大越宽松
+  tokenizer: 0.01             # 卡方/Fisher 检验的显著性水平 alpha
+  needle: 0.01                # 召回率差异 2×2 卡方的 alpha
+  think-effort: 0.01          # Mann-Whitney U + Fisher 合并 p 值的 alpha
+  toolcall: 0.05              # 双分量共用：JSD 均值上限 + 合法率卡方 alpha
+
+# ── 运行时参数（全部不进 digest）────────────────────────────────────────
+runtime:
+  max_concurrency: 4          # 并发上限，缺省 4
+  timeout_sec: 120            # 单请求超时，缺省 120
+  min_interval_ms: 0          # 请求最小间隔，用于遵守端点速率限制
+  max_attempts: 3             # 单题尝试上限（含首次），缺省 3
+  backoff_base_ms: 500        # 重试退避基准：第 n 次重试前等 base << n 毫秒
+  backoff_max_ms: 30000       # 退避封顶
+  seed: 20260904              # 任务洗牌种子；只影响发出顺序，不影响样本
+  raw_level: digest           # digest | full（full 当前版本未实现，会被拒绝）
+
+# ── 长上下文填充（context_buckets > 0 时生效）───────────────────────────
+padding:
+  # 填充文本由 (bucket, seed) 唯一决定；seed 进 digest（padding_seed 字段）。
+  # 缺省 12345（padding/v1 时代的固定值），不写本段即可复现旧行为。
+  seed: 12345
