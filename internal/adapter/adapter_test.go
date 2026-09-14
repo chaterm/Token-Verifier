@@ -63,6 +63,9 @@ func TestOpenAIRenderOnce(t *testing.T) {
 	if body["stream"] != false {
 		t.Errorf("stream = %v", body["stream"])
 	}
+	if _, ok := body["stream_options"]; ok {
+		t.Errorf("非流式请求不应带 stream_options: %v", body["stream_options"])
+	}
 	if body["temperature"] != 1.0 {
 		t.Errorf("temperature = %v", body["temperature"])
 	}
@@ -102,8 +105,30 @@ func TestOpenAIOverridesAndPlaceholder(t *testing.T) {
 	if body["reasoning_effort"] != "high" {
 		t.Errorf("reasoning_effort = %v, want high", body["reasoning_effort"])
 	}
+	// 流式请求默认带 stream_options.include_usage（否则端点不上报 usage）
+	so, ok := body["stream_options"].(map[string]any)
+	if !ok || so["include_usage"] != true {
+		t.Errorf("stream_options = %v, want include_usage:true", body["stream_options"])
+	}
 	// 文本插值场景由 renderBody 之上的 expandPlaceholders 单测覆盖
 	_ = body["extra"]
+}
+
+func TestOpenAIStreamOptionsOverridable(t *testing.T) {
+	srv, f := newServer(t, nil)
+	lr := LogicalRequest{Model: "m", Prompt: "p", Stream: true}
+	tb := ThinkingBlock{BodyOverrides: map[string]any{
+		"stream_options": map[string]any{"include_usage": false},
+	}}
+	req, _ := openaiChatAdapter{}.Render(srv.URL, "", lr, tb)
+	_, _ = http.DefaultClient.Do(req)
+
+	var body map[string]any
+	_ = json.Unmarshal([]byte(f.lastBody), &body)
+	so, ok := body["stream_options"].(map[string]any)
+	if !ok || so["include_usage"] != false {
+		t.Errorf("stream_options = %v, want body_overrides 覆盖生效", body["stream_options"])
+	}
 }
 
 func TestAnthropicRenderHeaders(t *testing.T) {

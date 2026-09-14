@@ -35,5 +35,8 @@
 - JUnit 报告：多档位探针的 testcase 从每探针一个变为每档位一个，
   `tests` / `failures` / `skipped` 计数随档位展开；按测试名做趋势的 CI 会看到
   `onetoken[context_bucket=N]` 形式的新名字。单档位探针名字不变
+- openai-chat 流式请求默认携带 `stream_options: {include_usage: true}`
+  （Chat Completions 流式不显式开启时服务端不上报 usage，观测会缺 token 数）。
+  非保留字段，端点不识别时可经 `body_overrides` 覆盖
 - **`ToolVersion` 从常量 `0.2.0` 改为由 ldflags 注入（源码构建时为 `dev`）**：发布版 rawData manifest 的 tool_version 将与 git tag 一致
 - 示例配置改为模型无关占位；示例题库精简为 `suites/v1.example.yaml`

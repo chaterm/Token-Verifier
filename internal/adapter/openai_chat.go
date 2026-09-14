@@ -83,6 +83,12 @@ func (a openaiChatAdapter) Render(baseURL, apiKey string, lr LogicalRequest, tb 
 		"messages": msgs,
 		"stream":   lr.Stream,
 	}
+	if lr.Stream {
+		// Chat Completions 流式默认不上报 usage，不显式开启会让所有流式
+		// 观测拿不到 token 数。放在骨架里（非保留字段），端点不识别时可
+		// 经 body_overrides 覆盖。
+		skeleton["stream_options"] = map[string]any{"include_usage": true}
+	}
 	if lr.MaxTokens != nil {
 		skeleton["max_tokens"] = *lr.MaxTokens
 	}
