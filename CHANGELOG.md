@@ -10,7 +10,9 @@
 
 - GitHub Actions CI：gofmt / go vet / go test 三平台矩阵 + golangci-lint
 - goreleaser 发布配置：多平台二进制内置示例配置与题库，`v*` tag 自动出 draft release
-- `Publish Baseline` workflow：题库 + 官方 rawData 成对发布（强制 digest 级门禁）
+- `Publish Baseline` workflow：题库 + 官方 rawData 成对发布（强制 digest 级门禁）。
+  随后迁移至独立数据仓库 [Token-Verifier-Data](https://github.com/chaterm/Token-Verifier-Data)
+  （draft release 门禁 + config `suite.path`/`sha256` 自动改写），本仓库不再随附
 - 社区文件：CONTRIBUTING / CODE_OF_CONDUCT / SECURITY
 - docs/BASELINES.md 官方基线索引
 - 档位级阈值：`thresholds` 段与 `--threshold` 支持 `<probe>.<bucket>` 键

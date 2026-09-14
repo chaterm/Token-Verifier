@@ -241,12 +241,12 @@ tv collect -c token-verifier.yaml -o candidate.rawdata.jsonl.gz
 
 **3. 与基线比较**
 
-基线可以是你自己早前采集的文件，也可以是**官方基线**——题库快照 + digest 级 rawData 成对发布在 GitHub Releases（索引见 [BASELINES.md](./docs/BASELINES.md)）。下载一个基线 release 即拿到可比的一套，用 sha256 钉住：
+基线可以是你自己早前采集的文件，也可以是**官方基线**——题库快照 + 采集配置 + digest 级 rawData 成套发布在数据仓库 [`chaterm/Token-Verifier-Data`](https://github.com/chaterm/Token-Verifier-Data) 的 GitHub Releases（索引见 [BASELINES.md](./docs/BASELINES.md) 与该仓库 README）。下载的 config 里 `suite.path` 已改写为同级文件名、`suite.sha256` 已填好，三个文件放同一目录即可直接用：
 
 ```bash
-curl -LO https://github.com/chaterm/Token-Verifier/releases/download/baseline-<model>-suitev<N>/suite.yaml
-curl -LO https://github.com/chaterm/Token-Verifier/releases/download/baseline-<model>-suitev<N>/official.rawdata.jsonl.gz
-# 配置文件里：suite.path: ./suite.yaml，suite.sha256: <该 release 页给出的值>
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/suite.yaml
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/official.rawdata.jsonl.gz
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/config.yaml
 tv compare official.rawdata.jsonl.gz candidate.rawdata.jsonl.gz
 ```
 

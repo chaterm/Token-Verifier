@@ -241,12 +241,12 @@ Add `--dry-run` first to print the request count and a token estimate without sp
 
 **3. Compare against a baseline**
 
-A baseline can be your own earlier collection, or an **official baseline** — a suite snapshot plus digest-level rawData published as a pair on GitHub Releases (see [BASELINES.md](./docs/BASELINES.md) for the index). Downloading a baseline release gives you everything needed to compare, pinned by sha256:
+A baseline can be your own earlier collection, or an **official baseline** — a suite snapshot, the collection config, and digest-level rawData published as a set on GitHub Releases of the data repo [`chaterm/Token-Verifier-Data`](https://github.com/chaterm/Token-Verifier-Data) (see [BASELINES.md](./docs/BASELINES.md) and that repo's README for the index). Downloading a baseline release gives you everything needed to compare; the published config already has `suite.path` rewritten to its sibling file and `suite.sha256` filled in, so the three files just work side by side:
 
 ```bash
-curl -LO https://github.com/chaterm/Token-Verifier/releases/download/baseline-<model>-suitev<N>/suite.yaml
-curl -LO https://github.com/chaterm/Token-Verifier/releases/download/baseline-<model>-suitev<N>/official.rawdata.jsonl.gz
-# in your config: suite.path: ./suite.yaml, suite.sha256: <value from that release>
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/suite.yaml
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/official.rawdata.jsonl.gz
+curl -LO https://github.com/chaterm/Token-Verifier-Data/releases/download/baseline-<model>-suitev<N>/config.yaml
 tv compare official.rawdata.jsonl.gz candidate.rawdata.jsonl.gz
 ```
 
