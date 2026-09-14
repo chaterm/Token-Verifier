@@ -39,7 +39,22 @@ type ProbeMeta struct {
 	StatKind          StatKind
 }
 
-// Verdict 单探针判定结果。
+// BucketVerdict 单个上下文档位的子判定。比较侧按 context_bucket 分区后
+// 逐档位调 Compare 得到；探针实现不感知本类型。
+type BucketVerdict struct {
+	ContextBucket   int
+	Verdict         string // pass | fail | inconclusive
+	Statistic       *float64
+	Threshold       float64
+	ThresholdSource string // config | flag，由上层填充
+	Ratio           *float64
+	Note            string
+	Warning         string
+}
+
+// Verdict 单探针判定结果（rollup）。多档位时 Buckets 携带逐档位子判定，
+// 顶层 Statistic/Threshold/Ratio 取最差 ratio 档位的值，
+// 保证 ratio > 1 ⟺ fail 的不变式在 rollup 层继续成立。
 type Verdict struct {
 	ProbeID         string
 	Verdict         string   // pass | fail | inconclusive
@@ -49,6 +64,7 @@ type Verdict struct {
 	Ratio           *float64 // 越限倍数，>1 恒等价 fail；为聚合层预留
 	Note            string   // inconclusive 时的原因说明
 	Warning         string   // 判定有效但需要知晓的边界（如检验功效不足），进报告
+	Buckets         []BucketVerdict
 	Cells           []CellDetail
 }
 

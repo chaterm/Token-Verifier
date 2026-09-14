@@ -179,6 +179,115 @@ func TestJUnit(t *testing.T) {
 	}
 }
 
+// bucketedResult 在 sampleResult 基础上给 onetoken 挂两条档位子判定：
+// bucket 0 pass，bucket 8000 fail；rollup 取最差（8000）。
+func bucketedResult() *compare.Result {
+	res := sampleResult()
+	res.Verdicts[0] = probe.Verdict{
+		ProbeID: "onetoken", Verdict: "fail",
+		Statistic: f64(0.17), Threshold: 0.12, ThresholdSource: "config",
+		Ratio: f64(1.42), Note: "2 个档位各自判定，取最差（bucket 8000）",
+		Buckets: []probe.BucketVerdict{
+			{ContextBucket: 0, Verdict: "pass", Statistic: f64(0.083),
+				Threshold: 0.1, ThresholdSource: "config", Ratio: f64(0.83)},
+			{ContextBucket: 8000, Verdict: "fail", Statistic: f64(0.17),
+				Threshold: 0.12, ThresholdSource: "flag", Ratio: f64(1.42)},
+		},
+		Cells: []probe.CellDetail{
+			{Key: map[string]string{"question_id": "ot.v1.001", "context_bucket": "0"},
+				NA: 20, NB: 20, Stat: f64(0.083)},
+			{Key: map[string]string{"question_id": "ot.v1.001", "context_bucket": "8000"},
+				NA: 20, NB: 20, Stat: f64(0.17)},
+		},
+	}
+	return res
+}
+
+func TestStdoutBuckets(t *testing.T) {
+	var buf bytes.Buffer
+	Stdout(&buf, bucketedResult())
+	out := buf.String()
+	for _, want := range []string{
+		"bucket 0", "bucket 8000", // 档位子行
+		"0.083 JSD", "0.17 JSD", // 各档位统计量
+		"├─", "└─", // 分支符号
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout 缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestJSONBuckets(t *testing.T) {
+	var buf bytes.Buffer
+	if err := JSON(&buf, bucketedResult()); err != nil {
+		t.Fatal(err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	ot := rep["probes"].([]any)[0].(map[string]any)
+	buckets, ok := ot["buckets"].([]any)
+	if !ok || len(buckets) != 2 {
+		t.Fatalf("buckets = %v, want 2 条", ot["buckets"])
+	}
+	b8 := buckets[1].(map[string]any)
+	if b8["context_bucket"].(float64) != 8000 || b8["verdict"] != "fail" ||
+		b8["threshold"].(float64) != 0.12 || b8["threshold_source"] != "flag" {
+		t.Errorf("bucket 8000 = %v", b8)
+	}
+	// 单档位探针（sampleResult 的 tokenizer）不输出 buckets 键
+	tk := rep["probes"].([]any)[1].(map[string]any)
+	if _, has := tk["buckets"]; has {
+		t.Errorf("单档位不应有 buckets 键: %v", tk)
+	}
+}
+
+func TestJUnitBuckets(t *testing.T) {
+	var buf bytes.Buffer
+	if err := JUnit(&buf, bucketedResult()); err != nil {
+		t.Fatal(err)
+	}
+	var suite struct {
+		Tests    int `xml:"tests,attr"`
+		Failures int `xml:"failures,attr"`
+		Skipped  int `xml:"skipped,attr"`
+		Cases    []struct {
+			Name    string    `xml:"name,attr"`
+			Failure *struct{} `xml:"failure"`
+		} `xml:"testcase"`
+	}
+	if err := xml.Unmarshal(bytes.TrimPrefix(buf.Bytes(), []byte(xml.Header)), &suite); err != nil {
+		t.Fatal(err)
+	}
+	// onetoken 两档位 + tokenizer + needle = 4 个 testcase
+	if suite.Tests != 4 || suite.Failures != 2 || suite.Skipped != 1 {
+		t.Errorf("suite = %+v, want tests 4 / failures 2 / skipped 1", suite)
+	}
+	if suite.Cases[0].Name != "onetoken[context_bucket=0]" || suite.Cases[0].Failure != nil {
+		t.Errorf("case 0 = %+v", suite.Cases[0])
+	}
+	if suite.Cases[1].Name != "onetoken[context_bucket=8000]" || suite.Cases[1].Failure == nil {
+		t.Errorf("case 1 = %+v, want fail", suite.Cases[1])
+	}
+}
+
+func TestVerboseBuckets(t *testing.T) {
+	var buf bytes.Buffer
+	Verbose(&buf, bucketedResult())
+	out := buf.String()
+	for _, want := range []string{
+		"[bucket 0] PASS", "[bucket 8000] FAIL",
+		"threshold 0.1", "threshold 0.12",
+		"(flag)", // 档位阈值来源
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("verbose 缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestReject(t *testing.T) {
 	var buf bytes.Buffer
 	Reject(&buf, &compare.GateError{

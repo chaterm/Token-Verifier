@@ -275,6 +275,7 @@ type Verdict struct {
     Threshold  float64   // 用户提供
     Ratio      float64   // 见下
     Verdict    string    // pass | fail | inconclusive
+    Buckets    []BucketVerdict // 多档位时的逐档位子判定
     Cells      []CellDetail
 }
 ```
@@ -289,7 +290,17 @@ type Verdict struct {
 两者都满足 `ratio > 1 ⟺ fail`。当前**不消费** `Ratio`，它是给将来的聚合层
 预留的接缝：要接聚合，直接读 `ratio` 即可，无需重跑采集。
 
-`inconclusive` 用于：探针因缺能力被跳过、所有 cell 都 insufficient、
+**按档位分区判定。** 探针声明了多个 `context_buckets` 时，cell 先按
+`context_bucket` 分区，每档位用各自生效的阈值（`thresholds.<probe>.<bucket>`
+覆盖探针级兜底）独立判定，得到档位子判定 `BucketVerdict`；探针级 `Verdict`
+是 rollup：`Statistic` / `Threshold` / `Ratio` 取最差档位（ratio 最大者）的值，
+`Cells` 拼接各档位。某档位 inconclusive（样本不足等）时排除该档位、
+在 `Warning` 里点名，全部档位 inconclusive 才整体 inconclusive。
+报告层把子判定展开：stdout 档位子行、JSON `buckets` 数组、JUnit 每档位一个
+testcase（`onetoken[context_bucket=8000]`）。单档位探针不分区、无子判定，
+行为与分区机制引入前一致。
+
+`inconclusive` 用于：探针因缺能力被跳过、所有 cell（或所有档位）都 insufficient、
 或该探针只在一侧存在（后者通常已在 digest 闸门被拦下）。
 
 ### 3.5 传输指标不参与判定

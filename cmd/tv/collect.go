@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/chaterm/token-verifier/internal/collect"
 	"github.com/chaterm/token-verifier/internal/compare"
@@ -142,7 +141,7 @@ func cmdRun(args []string) int {
 		return exitIncompat
 	}
 	// 3. 待比较探针的阈值齐全（与 compare 同一套解析与校验）
-	if _, code := precheckThresholds(baseline, thresholds, cfg); code != 0 {
+	if code := precheckThresholds(baseline, thresholds, cfg); code != 0 {
 		return code
 	}
 
@@ -199,30 +198,34 @@ func cmdRun(args []string) int {
 }
 
 // precheckThresholds 采集前检查基线计划中所有已实现探针的阈值是否齐全合法。
-// 与 compare.Run 内的解析完全同源，只是提前到花钱之前。
-func precheckThresholds(baseline *rawdata.File, thresholds map[string]float64, cfg *config.File) (map[string]config.ResolvedThreshold, int) {
+// 与 compare.Run 内的解析完全同源（含档位级阈值），只是提前到花钱之前。
+func precheckThresholds(baseline *rawdata.File, thresholds map[string]float64, cfg *config.File) int {
 	planParsed, err := baseline.Manifest.CollectionPlanParsed()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  基线采集计划解析失败: %v\n", err)
-		return nil, exitUsage
+		return exitUsage
 	}
-	var ids []string
 	pValueProbes := map[string]bool{}
-	for id := range planParsed.Probes {
+	probeBuckets := map[string][]int{}
+	for id, pp := range planParsed.Probes {
 		if p, ok := probe.Get(id); ok {
-			ids = append(ids, id)
 			if p.Meta().StatKind == probe.StatPValue {
 				pValueProbes[id] = true
 			}
+			// 与 compare.Run 同构：cell_key 不含 context_bucket 维度时
+			// 只要求探针级阈值（退化路径）
+			probeBuckets[id] = nil
+			if compare.BucketedCellKey(pp.CellKey) {
+				probeBuckets[id] = pp.ContextBuckets
+			}
 		}
 	}
-	sort.Strings(ids)
-	_, err = config.ResolveThresholds(ids, thresholds, cfg, pValueProbes)
+	_, err = config.ResolveThresholds(probeBuckets, thresholds, cfg, pValueProbes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
-		return nil, exitUsage
+		return exitUsage
 	}
-	return nil, 0
+	return 0
 }
 
 // verdictExitCode 从判定结果算退出码（compare/run 共用）。

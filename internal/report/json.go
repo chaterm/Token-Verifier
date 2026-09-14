@@ -32,15 +32,28 @@ type jsonTransportHists struct {
 }
 
 type jsonProbe struct {
-	ProbeID         string     `json:"probe_id"`
-	Verdict         string     `json:"verdict"`
-	Statistic       *float64   `json:"statistic"`
-	Threshold       float64    `json:"threshold"`
-	ThresholdSource string     `json:"threshold_source,omitempty"`
-	Ratio           *float64   `json:"ratio"`
-	Note            string     `json:"note,omitempty"`
-	Warning         string     `json:"warning,omitempty"`
-	Cells           []jsonCell `json:"cells,omitempty"`
+	ProbeID         string       `json:"probe_id"`
+	Verdict         string       `json:"verdict"`
+	Statistic       *float64     `json:"statistic"`
+	Threshold       float64      `json:"threshold"`
+	ThresholdSource string       `json:"threshold_source,omitempty"`
+	Ratio           *float64     `json:"ratio"`
+	Note            string       `json:"note,omitempty"`
+	Warning         string       `json:"warning,omitempty"`
+	Buckets         []jsonBucket `json:"buckets,omitempty"`
+	Cells           []jsonCell   `json:"cells,omitempty"`
+}
+
+// jsonBucket 单个上下文档位的子判定（多档位比较时输出；单档位不输出）。
+type jsonBucket struct {
+	ContextBucket   int      `json:"context_bucket"`
+	Verdict         string   `json:"verdict"`
+	Statistic       *float64 `json:"statistic"`
+	Threshold       float64  `json:"threshold"`
+	ThresholdSource string   `json:"threshold_source,omitempty"`
+	Ratio           *float64 `json:"ratio"`
+	Note            string   `json:"note,omitempty"`
+	Warning         string   `json:"warning,omitempty"`
 }
 
 // jsonCell 单 cell 明细：cell_key 各分量平铺在顶层，两侧样本量放 a/b。
@@ -128,6 +141,21 @@ func JSON(w io.Writer, res *compare.Result) error {
 			Ratio:           v.Ratio,
 			Note:            v.Note,
 			Warning:         v.Warning,
+		}
+		// 多档位比较才输出档位子判定，单档位保持旧 JSON 形状
+		if len(v.Buckets) > 1 {
+			for _, bv := range v.Buckets {
+				jp.Buckets = append(jp.Buckets, jsonBucket{
+					ContextBucket:   bv.ContextBucket,
+					Verdict:         bv.Verdict,
+					Statistic:       bv.Statistic,
+					Threshold:       bv.Threshold,
+					ThresholdSource: bv.ThresholdSource,
+					Ratio:           bv.Ratio,
+					Note:            bv.Note,
+					Warning:         bv.Warning,
+				})
+			}
 		}
 		for _, c := range v.Cells {
 			jp.Cells = append(jp.Cells, jsonCell{

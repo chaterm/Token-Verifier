@@ -141,8 +141,13 @@ probes:
     min_n: 5                  # 可选，缺省 5
 
 # ── 比较判据（compare / run 必填；工具不提供默认值，不进 digest）────────
+# 支持档位级覆盖：<probe>.<bucket> 只对该 context_bucket 生效，
+# 档位必须出现在对应探针的 context_buckets 中，否则报错。
+# 未写档位键的档位回退探针级值；比较按档位分区、各自判定、取最差。
 thresholds:
-  onetoken: 0.15              # 分布距离（JSD）上限，越大越宽松
+  onetoken: 0.15              # 分布距离（JSD）上限（探针级兜底）
+  # onetoken.0: 0.10          # 短上下文更严：档位级覆盖示例
+  # onetoken.8000: 0.20       # 长上下文噪声大，放宽
   tokenizer: 0.01             # 卡方/Fisher 检验的显著性水平 alpha
   needle: 0.01                # 召回率差异 2×2 卡方的 alpha
   think-effort: 0.01          # Mann-Whitney U + Fisher 合并 p 值的 alpha

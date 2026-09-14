@@ -50,28 +50,31 @@ func TestLoadErrors(t *testing.T) {
 
 func TestResolveThresholdsFlagOverConfig(t *testing.T) {
 	cfg := writeCfg(t, "thresholds:\n  onetoken: 0.15\n")
+	probes := map[string][]int{"onetoken": nil}
 	// flag 覆盖 config
 	got, err := ResolveThresholds(
-		[]string{"onetoken"},
+		probes,
 		map[string]float64{"onetoken": 0.2},
 		cfg, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["onetoken"].Value != 0.2 || got["onetoken"].Source != "flag" {
-		t.Errorf("got %+v, want 0.2 from flag", got["onetoken"])
+	th, ok := got["onetoken"].For(0)
+	if !ok || th.Value != 0.2 || th.Source != "flag" {
+		t.Errorf("got %+v, want 0.2 from flag", th)
 	}
 	// 只有 config
-	got, err = ResolveThresholds([]string{"onetoken"}, nil, cfg, nil)
+	got, err = ResolveThresholds(probes, nil, cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["onetoken"].Value != 0.15 || got["onetoken"].Source != "config" {
-		t.Errorf("got %+v, want 0.15 from config", got["onetoken"])
+	th, _ = got["onetoken"].For(0)
+	if th.Value != 0.15 || th.Source != "config" {
+		t.Errorf("got %+v, want 0.15 from config", th)
 	}
 	// 两处都没有 → MissingThresholdError
-	_, err = ResolveThresholds([]string{"needle"}, nil, cfg, nil)
+	_, err = ResolveThresholds(map[string][]int{"needle": nil}, nil, cfg, nil)
 	var mte MissingThresholdError
 	if !errors.As(err, &mte) {
 		t.Fatalf("err = %v, want MissingThresholdError", err)
@@ -81,14 +84,109 @@ func TestResolveThresholdsFlagOverConfig(t *testing.T) {
 	}
 }
 
+func TestResolveThresholdsBucketKeys(t *testing.T) {
+	cfg := writeCfg(t, "thresholds:\n  onetoken: 0.15\n  onetoken.8000: 0.12\n")
+	probes := map[string][]int{"onetoken": {0, 8000}}
+
+	// 档位专用 > 探针级兜底
+	got, err := ResolveThresholds(probes, nil, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th, _ := got["onetoken"].For(0); th.Value != 0.15 || th.Source != "config" {
+		t.Errorf("bucket 0 应兜底 0.15, got %+v", th)
+	}
+	if th, _ := got["onetoken"].For(8000); th.Value != 0.12 || th.Source != "config" {
+		t.Errorf("bucket 8000 应专用 0.12, got %+v", th)
+	}
+
+	// 四级优先级：flag <probe>.<bucket> > config <probe>.<bucket> > flag <probe> > config <probe>
+	got, err = ResolveThresholds(probes,
+		map[string]float64{"onetoken": 0.3, "onetoken.8000": 0.2}, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th, _ := got["onetoken"].For(0); th.Value != 0.3 || th.Source != "flag" {
+		t.Errorf("bucket 0 应取 flag 探针级 0.3, got %+v", th)
+	}
+	if th, _ := got["onetoken"].For(8000); th.Value != 0.2 || th.Source != "flag" {
+		t.Errorf("bucket 8000 应取 flag 档位级 0.2, got %+v", th)
+	}
+
+	// 只写满所有档位、不写兜底 → 通过
+	cfg2 := writeCfg(t, "thresholds:\n  onetoken.0: 0.1\n  onetoken.8000: 0.12\n")
+	got, err = ResolveThresholds(probes, nil, cfg2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th, _ := got["onetoken"].For(0); th.Value != 0.1 {
+		t.Errorf("bucket 0 got %+v", th)
+	}
+	if th, _ := got["onetoken"].For(8000); th.Value != 0.12 {
+		t.Errorf("bucket 8000 got %+v", th)
+	}
+
+	// 缺一个档位且无兜底 → MissingThresholdError 指名档位
+	cfg3 := writeCfg(t, "thresholds:\n  onetoken.0: 0.1\n")
+	_, err = ResolveThresholds(probes, nil, cfg3, nil)
+	var mte MissingThresholdError
+	if !errors.As(err, &mte) {
+		t.Fatalf("err = %v, want MissingThresholdError", err)
+	}
+	if mte.Bucket == nil || *mte.Bucket != 8000 {
+		t.Errorf("错误应指名缺档位 8000, got %+v", mte)
+	}
+	if !strings.Contains(mte.Error(), "8000") {
+		t.Errorf("错误信息应含档位: %v", mte.Error())
+	}
+}
+
+func TestResolveThresholdsBadBucketKeys(t *testing.T) {
+	probes := map[string][]int{"onetoken": {0, 8000}}
+	// 档位不在 context_buckets 内 → 报错（笔误防呆）
+	cfg := writeCfg(t, "thresholds:\n  onetoken: 0.15\n  onetoken.8001: 0.12\n")
+	if _, err := ResolveThresholds(probes, nil, cfg, nil); err == nil {
+		t.Error("档位不在 context_buckets 内应报错")
+	}
+	// 非法档位后缀
+	cfg = writeCfg(t, "thresholds:\n  onetoken: 0.15\n  onetoken.abc: 0.12\n")
+	if _, err := ResolveThresholds(probes, nil, cfg, nil); err == nil {
+		t.Error("非法档位后缀应报错")
+	}
+	// flag 里的坏档位同样拒绝
+	if _, err := ResolveThresholds(probes,
+		map[string]float64{"onetoken": 0.15, "onetoken.8001": 0.12}, nil, nil); err == nil {
+		t.Error("flag 档位笔误应报错")
+	}
+	// 未知探针的档位键宽容忽略（与旧版对未知探针的行为一致）
+	if _, err := ResolveThresholds(probes, nil,
+		writeCfg(t, "thresholds:\n  onetoken: 0.15\n  nosuch.4000: 0.1\n"), nil); err != nil {
+		t.Errorf("未知探针档位键应忽略: %v", err)
+	}
+}
+
+func TestResolveThresholdsBucketValidation(t *testing.T) {
+	// 档位键同样走数值校验
+	cfg := writeCfg(t, "thresholds:\n  onetoken.0: -1\n")
+	if _, err := ResolveThresholds(map[string][]int{"onetoken": {0}}, nil, cfg, nil); err == nil {
+		t.Error("档位负阈值应报错")
+	}
+	// p 值类探针的档位键 alpha 须在 (0,1)
+	cfg = writeCfg(t, "thresholds:\n  tokenizer.0: 1.5\n")
+	if _, err := ResolveThresholds(map[string][]int{"tokenizer": {0}}, nil, cfg,
+		map[string]bool{"tokenizer": true}); err == nil {
+		t.Error("档位 alpha >= 1 应报错")
+	}
+}
+
 func TestResolveThresholdsValidation(t *testing.T) {
 	cfg := writeCfg(t, "thresholds:\n  onetoken: -1\n  tokenizer: 1.5\n")
 	// 非正数
-	if _, err := ResolveThresholds([]string{"onetoken"}, nil, cfg, nil); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"onetoken": nil}, nil, cfg, nil); err == nil {
 		t.Error("负阈值应报错")
 	}
 	// alpha 类须在 (0,1)
-	if _, err := ResolveThresholds([]string{"tokenizer"}, nil, cfg, map[string]bool{"tokenizer": true}); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"tokenizer": nil}, nil, cfg, map[string]bool{"tokenizer": true}); err == nil {
 		t.Error("alpha >= 1 应报错")
 	}
 }
@@ -96,19 +194,19 @@ func TestResolveThresholdsValidation(t *testing.T) {
 func TestResolveThresholdsNaNInf(t *testing.T) {
 	// NaN 与任何数比较都为 false，能绕过 <=0 / >=1 检查，让判定恒 pass —— 必须拒绝
 	nanCfg := writeCfg(t, "thresholds:\n  onetoken: .nan\n  tokenizer: .inf\n")
-	if _, err := ResolveThresholds([]string{"onetoken"}, nil, nanCfg, nil); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"onetoken": nil}, nil, nanCfg, nil); err == nil {
 		t.Error("NaN 阈值应报错")
 	}
-	if _, err := ResolveThresholds([]string{"tokenizer"}, nil, nanCfg, map[string]bool{"tokenizer": true}); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"tokenizer": nil}, nil, nanCfg, map[string]bool{"tokenizer": true}); err == nil {
 		t.Error("+Inf 阈值应报错")
 	}
 	// flag 路径同理：ParseFloat 接受 "NaN"/"Inf"
 	flags := map[string]float64{"onetoken": math.NaN()}
-	if _, err := ResolveThresholds([]string{"onetoken"}, flags, nil, nil); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"onetoken": nil}, flags, nil, nil); err == nil {
 		t.Error("flag NaN 阈值应报错")
 	}
 	flags = map[string]float64{"onetoken": math.Inf(-1)}
-	if _, err := ResolveThresholds([]string{"onetoken"}, flags, nil, nil); err == nil {
+	if _, err := ResolveThresholds(map[string][]int{"onetoken": nil}, flags, nil, nil); err == nil {
 		t.Error("flag -Inf 阈值应报错")
 	}
 }

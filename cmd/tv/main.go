@@ -63,7 +63,9 @@ func usage() {
 
 compare 的 flags:
   -c, --config <file>        配置文件（读 thresholds 段）
-  --threshold <probe>=<v>    直接给阈值，可重复；优先于配置文件
+  --threshold <probe>=<v>    直接给阈值，可重复；优先于配置文件。
+                             档位级写法 <probe>.<bucket>=<v>（如 onetoken.8000=0.12）
+                             只对该 context_bucket 生效，优先于探针级
   -v, --verbose              追加证据明细：逐 cell 分布直方图与传输分布对比
   --json <file>              另写 JSON 报告（始终含全量 cell 明细与直方图数据）
   --junit <file>             另写 JUnit XML 报告

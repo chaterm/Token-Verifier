@@ -450,6 +450,208 @@ func TestRunIncompleteSide(t *testing.T) {
 	}
 }
 
+// ---- 档位（context_bucket）分区判定 ----
+
+// planBuckets 生成含 context_buckets 的 onetoken 计划。
+func planBuckets(buckets ...int) map[string]any {
+	plan := planWith(map[string][]string{"onetoken": {"question_id", "context_bucket"}})
+	plan["probes"].(map[string]any)["onetoken"].(map[string]any)["context_buckets"] = buckets
+	return plan
+}
+
+func TestRunBucketPartitionWorstWins(t *testing.T) {
+	// 两档位：bucket 0 两侧同分布（JSD=0），bucket 8000 完全不相交（JSD=1）。
+	// 旧行为跨档位取均值 0.5 与单阈值比较；新行为逐档位判定，
+	// rollup 取最差档位 → fail，且 Buckets 携带两条子判定。
+	plan := planBuckets(0, 8000)
+	recsA := append(mkOnetokenRecords("q1", 0, "7", "3", "5"), mkOnetokenRecords("q1", 8000, "7")...)
+	recsB := append(mkOnetokenRecords("q1", 0, "7", "3", "5"), mkOnetokenRecords("q1", 8000, "9")...)
+	a := rawFile{digest: "sha256:aa", plan: plan, records: recsA}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: recsB}.build(t)
+
+	res, err := Run(a, b, map[string]float64{"onetoken": 0.15}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := res.Verdicts[0]
+	if v.Verdict != "fail" {
+		t.Fatalf("rollup = %v, want fail（最差档位 JSD=1 > 0.15）", v.Verdict)
+	}
+	if len(v.Buckets) != 2 {
+		t.Fatalf("buckets = %+v, want 2 条子判定", v.Buckets)
+	}
+	b0, b8 := v.Buckets[0], v.Buckets[1]
+	if b0.ContextBucket != 0 || b0.Verdict != "pass" {
+		t.Errorf("bucket 0 = %+v, want pass", b0)
+	}
+	if b8.ContextBucket != 8000 || b8.Verdict != "fail" {
+		t.Errorf("bucket 8000 = %+v, want fail", b8)
+	}
+	// rollup 的 Statistic/Threshold/Ratio 与最差档位一致
+	if v.Statistic == nil || *v.Statistic != *b8.Statistic {
+		t.Errorf("rollup statistic = %v, want 最差档位的 %v", v.Statistic, b8.Statistic)
+	}
+	if v.Threshold != b8.Threshold || v.Ratio == nil || *v.Ratio != *b8.Ratio {
+		t.Errorf("rollup threshold/ratio 应取最差档位: %+v vs %+v", v, b8)
+	}
+	if *v.Ratio <= 1 {
+		t.Errorf("fail 的 ratio 应 > 1: %v", *v.Ratio)
+	}
+	// cell 明细两档位都在
+	if len(v.Cells) != 2 {
+		t.Errorf("cells = %d, want 2", len(v.Cells))
+	}
+}
+
+func TestRunBucketLevelThreshold(t *testing.T) {
+	// 档位级阈值：bucket 0 用 0.15，bucket 8000 用 0.12。
+	// 构造 JSD 落在 (0.12, 0.15) 之间困难，改用相反方向验证取值生效：
+	// bucket 8000 完全不相交（JSD=1），档位阈值 1.5 > 1 → pass；
+	// bucket 0 同分布（JSD=0）但档位阈值给个极小正数仍 pass。
+	// 更直接的验证：让 bucket 8000 的档位阈值生效路径可观测 —— ThresholdSource。
+	plan := planBuckets(0, 8000)
+	recsA := append(mkOnetokenRecords("q1", 0, "7"), mkOnetokenRecords("q1", 8000, "7")...)
+	recsB := append(mkOnetokenRecords("q1", 0, "9"), mkOnetokenRecords("q1", 8000, "7")...)
+	a := rawFile{digest: "sha256:aa", plan: plan, records: recsA}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: recsB}.build(t)
+
+	cfg := &config.File{Thresholds: map[string]float64{
+		"onetoken":      0.15,
+		"onetoken.0":    1.5, // bucket 0 JSD=1 也 pass
+		"onetoken.8000": 0.12,
+	}}
+	res, err := Run(a, b, nil, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := res.Verdicts[0]
+	if len(v.Buckets) != 2 {
+		t.Fatalf("buckets = %+v, want 2", v.Buckets)
+	}
+	b0, b8 := v.Buckets[0], v.Buckets[1]
+	if b0.Threshold != 1.5 || b0.ThresholdSource != "config" || b0.Verdict != "pass" {
+		t.Errorf("bucket 0 应取档位阈值 1.5 → pass: %+v", b0)
+	}
+	if b8.Threshold != 0.12 || b8.Verdict != "pass" {
+		t.Errorf("bucket 8000 应取档位阈值 0.12 → pass（JSD=0）: %+v", b8)
+	}
+	// flag 档位键覆盖 config 档位键
+	res, err = Run(a, b, map[string]float64{"onetoken.0": 0.5}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th := res.Verdicts[0].Buckets[0]; th.Threshold != 0.5 || th.ThresholdSource != "flag" {
+		t.Errorf("flag 档位键应覆盖 config: %+v", th)
+	}
+}
+
+func TestRunBucketMissingThreshold(t *testing.T) {
+	// 只给 bucket 0 的档位阈值、无探针级兜底 → bucket 8000 缺阈值报错
+	plan := planBuckets(0, 8000)
+	recsA := append(mkOnetokenRecords("q1", 0, "7"), mkOnetokenRecords("q1", 8000, "7")...)
+	a := rawFile{digest: "sha256:aa", plan: plan, records: recsA}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: recsA}.build(t)
+
+	_, err := Run(a, b, map[string]float64{"onetoken.0": 0.15}, nil)
+	var mte config.MissingThresholdError
+	if !errors.As(err, &mte) || mte.ProbeID != "onetoken" || mte.Bucket == nil || *mte.Bucket != 8000 {
+		t.Errorf("err = %v, want MissingThresholdError(onetoken, bucket 8000)", err)
+	}
+}
+
+func TestRunBucketInconclusiveExcluded(t *testing.T) {
+	// bucket 8000 样本不足（< min_n=10）→ 该档位 inconclusive，
+	// 不污染整体：bucket 0 pass → rollup pass + Warning 点名。
+	plan := planBuckets(0, 8000)
+	recsA := append(mkOnetokenRecords("q1", 0, "7"),
+		otRecord("q1", 8000, "7"), otRecord("q1", 8000, "3"))
+	recsB := append(mkOnetokenRecords("q1", 0, "7"),
+		otRecord("q1", 8000, "7"), otRecord("q1", 8000, "3"))
+	a := rawFile{digest: "sha256:aa", plan: plan, records: recsA}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: recsB}.build(t)
+
+	res, err := Run(a, b, map[string]float64{"onetoken": 0.15}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := res.Verdicts[0]
+	if v.Verdict != "pass" {
+		t.Fatalf("rollup = %v, want pass（inconclusive 档位排除）", v.Verdict)
+	}
+	if len(v.Buckets) != 2 || v.Buckets[1].Verdict != "inconclusive" {
+		t.Errorf("bucket 8000 应 inconclusive: %+v", v.Buckets)
+	}
+	if !strings.Contains(v.Warning, "8000") {
+		t.Errorf("Warning 应点名未判定档位: %q", v.Warning)
+	}
+	// coverage 仍按探针计：该探针已出结论
+	if res.Compared != 1 {
+		t.Errorf("compared = %d, want 1", res.Compared)
+	}
+}
+
+func TestRunAllBucketsInconclusive(t *testing.T) {
+	// 所有档位都样本不足 → 整体 inconclusive
+	plan := planBuckets(0, 8000)
+	recs := []map[string]any{otRecord("q1", 0, "7"), otRecord("q1", 8000, "7")}
+	a := rawFile{digest: "sha256:aa", plan: plan, records: recs}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: recs}.build(t)
+
+	res, err := Run(a, b, map[string]float64{"onetoken": 0.15}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdicts[0].Verdict != "inconclusive" {
+		t.Errorf("rollup = %v, want inconclusive", res.Verdicts[0].Verdict)
+	}
+	if res.Compared != 0 {
+		t.Errorf("compared = %d, want 0", res.Compared)
+	}
+}
+
+func TestRunSingleBucketNoSubVerdicts(t *testing.T) {
+	// 单档位：不产生 Buckets 子判定，行为与旧版一致
+	plan := planBuckets(0)
+	a := rawFile{digest: "sha256:aa", plan: plan, records: mkOnetokenRecords("q1", 0, "7")}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: mkOnetokenRecords("q1", 0, "7")}.build(t)
+
+	res, err := Run(a, b, map[string]float64{"onetoken": 0.15}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := res.Verdicts[0]
+	if len(v.Buckets) != 0 {
+		t.Errorf("单档位不应有子判定: %+v", v.Buckets)
+	}
+	if v.Verdict != "pass" || v.ThresholdSource != "flag" {
+		t.Errorf("verdict = %+v, want pass/flag", v)
+	}
+	// 单档位时档位专用阈值也应生效
+	res, err = Run(a, b, map[string]float64{"onetoken.0": 0.3}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th := res.Verdicts[0].Threshold; th != 0.3 {
+		t.Errorf("单档位专用阈值应生效: %v, want 0.3", th)
+	}
+}
+
+func TestRunNoBucketCellKeyDegrades(t *testing.T) {
+	// cell_key 不含 context_bucket（自定义计划）→ 不分区，探针级阈值
+	plan := planWith(map[string][]string{"onetoken": {"question_id"}})
+	a := rawFile{digest: "sha256:aa", plan: plan, records: mkOnetokenRecords("q1", 0, "7")}.build(t)
+	b := rawFile{digest: "sha256:aa", plan: plan, records: mkOnetokenRecords("q1", 0, "7")}.build(t)
+
+	res, err := Run(a, b, map[string]float64{"onetoken": 0.15}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := res.Verdicts[0]
+	if len(v.Buckets) != 0 || v.Verdict != "pass" {
+		t.Errorf("退化路径应无子判定且 pass: %+v", v)
+	}
+}
+
 func TestRunMinNFromPlan(t *testing.T) {
 	// 每侧 5 个样本：plan 带 min_n=5 → 可判；缺省（回退 10）→ inconclusive
 	var recs []map[string]any

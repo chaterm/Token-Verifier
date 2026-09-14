@@ -204,7 +204,7 @@ probes:
     context_buckets: [32000, 128000]
 
 thresholds:            # required for compare/run — no defaults are shipped
-  onetoken: 0.15
+  onetoken: 0.15       # per-bucket override, e.g. onetoken.32000: 0.2 (bucket must be in context_buckets)
   tokenizer: 0.01
   needle: 0.01
 
@@ -282,10 +282,11 @@ plan_digest  sha256:9f2c1a…   (match)
 coverage     3/3 probes compared
 
 PROBE              STATISTIC   THRESHOLD  SOURCE   VERDICT
-onetoken           0.041 JSD   0.150      config   pass
-tokenizer          p=0.83      α=0.01     config   pass
+onetoken           0.041 JSD   0.15       config   PASS
+tokenizer          p=0.83      α=0.01     config   PASS
 needle             p=0.004     α=0.01     flag     FAIL
-                   └─ bucket 128000: hit 12/40 vs 38/40
+  ├─ bucket 32000  p=0.62      α=0.01     flag     PASS
+  └─ bucket 128000 p=0.004     α=0.01     flag     FAIL
 
 transport (descriptive, not scored)
   availability  0.998 vs 0.994
@@ -294,6 +295,8 @@ transport (descriptive, not scored)
 
 exit 1
 ```
+
+Multi-bucket probes are judged per `context_bucket` (each bucket against its own threshold — `thresholds.needle.128000` overrides the probe-level value), and the probe row shows the worst bucket. Single-bucket probes render exactly one row, as before.
 
 With `-v`, an evidence section follows — here the `needle` failure shows per-cell recall, and onetoken shows the actual answer distributions behind the JSD:
 

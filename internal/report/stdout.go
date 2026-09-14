@@ -25,7 +25,21 @@ func Stdout(w io.Writer, res *compare.Result) {
 	fmt.Fprintf(w, "%-18s %-11s %-10s %-8s %s\n", "PROBE", "STATISTIC", "THRESHOLD", "SOURCE", "VERDICT")
 	for _, v := range res.Verdicts {
 		fmt.Fprintf(w, "%-18s %-11s %-10s %-8s %s\n",
-			v.ProbeID, statisticText(v), thresholdText(v), v.ThresholdSource, strings.ToUpper(v.Verdict))
+			v.ProbeID, statisticText(v.ProbeID, v.Statistic), thresholdText(v.ProbeID, v.Threshold),
+			v.ThresholdSource, strings.ToUpper(v.Verdict))
+		// 档位子行：多档位比较时逐档位展开（rollup 行取最差档位）
+		if len(v.Buckets) > 1 {
+			for i, bv := range v.Buckets {
+				branch := "├─"
+				if i == len(v.Buckets)-1 {
+					branch = "└─"
+				}
+				fmt.Fprintf(w, "  %s %-13s %-11s %-10s %-8s %s\n", branch,
+					fmt.Sprintf("bucket %d", bv.ContextBucket),
+					statisticText(v.ProbeID, bv.Statistic), thresholdText(v.ProbeID, bv.Threshold),
+					bv.ThresholdSource, strings.ToUpper(bv.Verdict))
+			}
+		}
 		// 细节行：功效警告、inconclusive 原因与最差 cell
 		if v.Warning != "" {
 			fmt.Fprintf(w, "%s└─ 警告: %s\n", indent(18), v.Warning)
@@ -54,29 +68,29 @@ func Stdout(w io.Writer, res *compare.Result) {
 }
 
 // statisticText 统计量列文本：距离类印数值，p 值类印 p=，缺值印 "-"。
-func statisticText(v probe.Verdict) string {
-	if v.Statistic == nil {
+func statisticText(probeID string, statistic *float64) string {
+	if statistic == nil {
 		return "-"
 	}
-	if meta, ok := probe.Get(v.ProbeID); ok && meta.Meta().StatKind == probe.StatPValue {
-		return "p=" + trimFloat(*v.Statistic)
+	if meta, ok := probe.Get(probeID); ok && meta.Meta().StatKind == probe.StatPValue {
+		return "p=" + trimFloat(*statistic)
 	}
-	switch v.ProbeID {
+	switch probeID {
 	case "onetoken":
-		return trimFloat(*v.Statistic) + " JSD"
+		return trimFloat(*statistic) + " JSD"
 	}
-	return trimFloat(*v.Statistic)
+	return trimFloat(*statistic)
 }
 
 // thresholdText 阈值列文本：p 值类显示为 α=。
-func thresholdText(v probe.Verdict) string {
-	if v.Threshold <= 0 {
+func thresholdText(probeID string, threshold float64) string {
+	if threshold <= 0 {
 		return "-"
 	}
-	if meta, ok := probe.Get(v.ProbeID); ok && meta.Meta().StatKind == probe.StatPValue {
-		return "α=" + trimFloat(v.Threshold)
+	if meta, ok := probe.Get(probeID); ok && meta.Meta().StatKind == probe.StatPValue {
+		return "α=" + trimFloat(threshold)
 	}
-	return trimFloat(v.Threshold)
+	return trimFloat(threshold)
 }
 
 // worstCell 找出 fail 探针里最差的一个 cell 作为细节行。

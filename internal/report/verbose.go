@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/chaterm/token-verifier/internal/compare"
@@ -33,19 +34,51 @@ func Verbose(w io.Writer, res *compare.Result) {
 	verboseTransport(w, res)
 }
 
-// verboseProbe 单探针段落：判定摘要 + 逐 cell 证据。
+// verboseProbe 单探针段落：判定摘要 + 档位子标题 + 逐 cell 证据。
 func verboseProbe(w io.Writer, v probe.Verdict) {
 	source := ""
 	if v.ThresholdSource != "" {
 		source = " (" + v.ThresholdSource + ")"
 	}
 	fmt.Fprintf(w, "\n── %s  %s  statistic %s  threshold %s%s\n",
-		v.ProbeID, strings.ToUpper(v.Verdict), statisticText(v), thresholdText(v), source)
+		v.ProbeID, strings.ToUpper(v.Verdict),
+		statisticText(v.ProbeID, v.Statistic), thresholdText(v.ProbeID, v.Threshold), source)
 	if v.Note != "" {
 		fmt.Fprintf(w, "   note: %s\n", v.Note)
 	}
 	if len(v.Cells) == 0 {
 		fmt.Fprintln(w, "   (无 cell 明细)")
+		return
+	}
+	// 多档位：按档位分组渲染，每组一个小标题；cell 明细挂在各自档位下
+	if len(v.Buckets) > 1 {
+		byBucket := map[string][]probe.CellDetail{}
+		for _, c := range v.Cells {
+			byBucket[c.Key["context_bucket"]] = append(byBucket[c.Key["context_bucket"]], c)
+		}
+		shown := 0
+		for _, bv := range v.Buckets {
+			key := strconv.Itoa(bv.ContextBucket)
+			cells := byBucket[key]
+			if len(cells) == 0 {
+				continue
+			}
+			bSource := ""
+			if bv.ThresholdSource != "" {
+				bSource = " (" + bv.ThresholdSource + ")"
+			}
+			fmt.Fprintf(w, "   [bucket %d] %s  statistic %s  threshold %s%s\n",
+				bv.ContextBucket, strings.ToUpper(bv.Verdict),
+				statisticText(v.ProbeID, bv.Statistic), thresholdText(v.ProbeID, bv.Threshold), bSource)
+			for _, c := range cells {
+				if shown >= verboseMaxCells {
+					fmt.Fprintf(w, "   … 其余 %d 个 cell 见 JSON 报告\n", len(v.Cells)-verboseMaxCells)
+					return
+				}
+				verboseCell(w, c)
+				shown++
+			}
+		}
 		return
 	}
 	for i, c := range v.Cells {

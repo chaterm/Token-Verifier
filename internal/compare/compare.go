@@ -79,19 +79,26 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 	}
 	sort.Strings(probeIDs)
 
-	var implemented []string
 	pValueProbes := map[string]bool{}
+	// probeBuckets：已实现探针 → 按档位判定时需要阈值的 context_buckets。
+	// cell_key 不含 context_bucket 维度（旧 rawData / 自定义计划）时为空，
+	// 走单阈值退化路径。
+	probeBuckets := map[string][]int{}
 	for _, id := range probeIDs {
 		if p, ok := probe.Get(id); ok {
-			implemented = append(implemented, id)
 			if p.Meta().StatKind == probe.StatPValue {
 				pValueProbes[id] = true
+			}
+			probeBuckets[id] = nil
+			if BucketedCellKey(plan.Probes[id].CellKey) {
+				probeBuckets[id] = plan.Probes[id].ContextBuckets
 			}
 		}
 	}
 
-	// 3. 阈值闸门：每个待比较（已实现）探针必须有用户阈值，flag > config
-	thresholds, err := config.ResolveThresholds(implemented, flagThresholds, cfg, pValueProbes)
+	// 3. 阈值闸门：每个待比较（已实现）探针的每个档位必须有用户阈值，
+	// 档位专用 > 探针级兜底；同级内 flag > config
+	thresholds, err := config.ResolveThresholds(probeBuckets, flagThresholds, cfg, pValueProbes)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +126,7 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 	}
 	res.Notes = append(res.Notes, samplingNotes(a, b)...)
 
-	// 4. 逐探针：配对 → Compare
+	// 4. 逐探针：配对 → 按 context_bucket 分区 → 逐档位 Compare → rollup
 	for _, id := range probeIDs {
 		p, ok := probe.Get(id)
 		if !ok {
@@ -130,10 +137,22 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 			})
 			continue
 		}
-		th := thresholds[id]
 		pairs := pairCells(a, b, id, plan.Probes[id].CellKey)
-		v := p.Compare(pairs, th.Value, plan.Probes[id].MinN)
-		v.ThresholdSource = th.Source
+		minN := plan.Probes[id].MinN
+		var v probe.Verdict
+		if len(probeBuckets[id]) > 1 {
+			v = compareBucketed(p, pairs, thresholds[id], minN)
+		} else {
+			// 单档位（或 cell_key 不含档位维度）：不分区，探针级阈值。
+			// 档位取计划里的唯一 bucket，保证档位专用阈值（如 onetoken.8000）生效
+			bucket := 0
+			if bs := probeBuckets[id]; len(bs) == 1 {
+				bucket = bs[0]
+			}
+			th, _ := thresholds[id].For(bucket)
+			v = p.Compare(pairs, th.Value, minN)
+			v.ThresholdSource = th.Source
+		}
 		if v.Verdict == "inconclusive" {
 			v.Note = strings.Join(append([]string{v.Note}, skippedNotes(id, a, b)...), "; ")
 		}
@@ -146,6 +165,155 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 		res.Coverage = float64(res.Compared) / float64(res.Planned)
 	}
 	return res, nil
+}
+
+// BucketedCellKey 判断计划的 cell_key 是否含 context_bucket 维度。
+// 含档位维度的计划按档位分区判定（要求档位级阈值齐全）；
+// 不含的（旧 rawData / 自定义计划）走单阈值退化路径。
+// collect 侧的阈值预检复用本函数，保证与比较侧同构。
+func BucketedCellKey(cellKey []string) bool {
+	if len(cellKey) == 0 {
+		cellKey = []string{"question_id", "context_bucket"} // pairCells 的默认
+	}
+	for _, k := range cellKey {
+		if k == "context_bucket" {
+			return true
+		}
+	}
+	return false
+}
+
+// compareBucketed 按 context_bucket 分区，逐档位用各自阈值判定，
+// 再收敛出探针级 rollup：
+//   - Statistic/Threshold/ThresholdSource/Ratio 取最差 ratio 档位的值，
+//     保持 ratio > 1 ⟺ fail 的不变式；
+//   - inconclusive 档位排除、不污染整体，进 rollup 的 Warning 点名；
+//     全部档位 inconclusive 才整体 inconclusive；
+//   - Cells 拼接各档位，Key 自带 context_bucket，明细零丢失。
+func compareBucketed(p probe.Probe, pairs []probe.CellPair, pt config.ProbeThresholds, minN int) probe.Verdict {
+	byBucket := map[int][]probe.CellPair{}
+	for _, pr := range pairs {
+		b, err := strconv.Atoi(pr.Key["context_bucket"])
+		if err != nil {
+			b = -1 // 理论不可达（cell_key 含 context_bucket 即数字）；归入未知分区
+		}
+		byBucket[b] = append(byBucket[b], pr)
+	}
+	buckets := make([]int, 0, len(byBucket))
+	for b := range byBucket {
+		buckets = append(buckets, b)
+	}
+	sort.Ints(buckets)
+
+	roll := probe.Verdict{ProbeID: p.Meta().ID}
+	var (
+		judged  []probe.BucketVerdict
+		skipped []string // inconclusive 档位的说明
+		worst   *probe.BucketVerdict
+	)
+	for _, b := range buckets {
+		th, ok := pt.For(b)
+		if !ok {
+			// ResolveThresholds 已保证不缺；防御性处理
+			skipped = append(skipped, fmt.Sprintf("bucket %d 无阈值", b))
+			continue
+		}
+		sub := p.Compare(byBucket[b], th.Value, minN)
+		bv := probe.BucketVerdict{
+			ContextBucket:   b,
+			Verdict:         sub.Verdict,
+			Statistic:       sub.Statistic,
+			Threshold:       th.Value,
+			ThresholdSource: th.Source,
+			Ratio:           sub.Ratio,
+			Note:            sub.Note,
+			Warning:         sub.Warning,
+		}
+		roll.Buckets = append(roll.Buckets, bv)
+		roll.Cells = append(roll.Cells, sub.Cells...)
+		if sub.Verdict == "inconclusive" {
+			note := sub.Note
+			if note == "" {
+				note = "样本不足或观测不可用"
+			}
+			skipped = append(skipped, fmt.Sprintf("bucket %d: %s", b, note))
+			continue
+		}
+		judged = append(judged, bv)
+		if worst == nil || worseThan(bv, *worst, p.Meta().StatKind) {
+			cp := bv
+			worst = &cp
+		}
+	}
+
+	if len(judged) == 0 {
+		roll.Verdict = "inconclusive"
+		if len(pairs) == 0 {
+			roll.Note = "两侧没有共同 cell"
+		} else {
+			roll.Note = "所有档位均无法判定"
+		}
+		if len(skipped) > 0 {
+			roll.Note += "（" + strings.Join(skipped, "; ") + "）"
+		}
+		return roll
+	}
+
+	roll.Verdict = worst.Verdict
+	roll.Statistic = worst.Statistic
+	roll.Threshold = worst.Threshold
+	roll.ThresholdSource = worst.ThresholdSource
+	roll.Ratio = worst.Ratio
+	if len(judged) > 1 {
+		roll.Note = fmt.Sprintf("%d 个档位各自判定，取最差（bucket %d）", len(judged), worst.ContextBucket)
+	} else {
+		roll.Note = worst.Note
+	}
+	// 警告聚合：逐档位功效警告都要保留（多档位下 lowPower 更易触发）
+	var warns []string
+	for _, bv := range judged {
+		if bv.Warning != "" {
+			warns = append(warns, fmt.Sprintf("bucket %d: %s", bv.ContextBucket, bv.Warning))
+		}
+	}
+	for _, s := range skipped {
+		warns = append(warns, "档位未判定: "+s)
+	}
+	roll.Warning = strings.Join(warns, "; ")
+	return roll
+}
+
+// worseThan 判定 a 是否比 b 更差：优先按 ratio（>1 恒等价 fail），
+// ratio 缺失时按 verdict 等级（fail > pass），再按 StatKind 方向比统计量。
+func worseThan(a, b probe.BucketVerdict, kind probe.StatKind) bool {
+	if a.Ratio != nil && b.Ratio != nil {
+		return *a.Ratio > *b.Ratio
+	}
+	if a.Ratio != nil {
+		return true
+	}
+	if b.Ratio != nil {
+		return false
+	}
+	rank := func(v string) int {
+		switch v {
+		case "fail":
+			return 2
+		case "pass":
+			return 1
+		}
+		return 0
+	}
+	if rank(a.Verdict) != rank(b.Verdict) {
+		return rank(a.Verdict) > rank(b.Verdict)
+	}
+	if a.Statistic == nil || b.Statistic == nil {
+		return false
+	}
+	if kind == probe.StatPValue {
+		return *a.Statistic < *b.Statistic // p 越小越差
+	}
+	return *a.Statistic > *b.Statistic // 距离越大越差
 }
 
 // pairCells 把两侧 record 按 cell_key 分组（仅该探针且 status=success），

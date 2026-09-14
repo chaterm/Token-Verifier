@@ -8,14 +8,37 @@ import (
 	"github.com/chaterm/token-verifier/internal/compare"
 )
 
-// JUnit 输出 JUnit XML 报告：整个比较是一个 testsuite，每个探针一个 testcase，
-// fail 带 <failure>，inconclusive 带 <skipped>，便于 CI 直接消费。
+// JUnit 输出 JUnit XML 报告：整个比较是一个 testsuite。
+// 单档位探针一个 testcase（name=探针 ID）；多档位探针每档位一个
+// testcase（name="探针[context_bucket=N]"），便于 CI 直接定位回归档位。
+// fail 带 <failure>，inconclusive 带 <skipped>。
 func JUnit(w io.Writer, res *compare.Result) error {
 	suite := junitSuite{
-		Name:  "token-verifier compare",
-		Tests: len(res.Verdicts),
+		Name: "token-verifier compare",
 	}
 	for _, v := range res.Verdicts {
+		if len(v.Buckets) > 1 {
+			for _, bv := range v.Buckets {
+				name := fmt.Sprintf("%s[context_bucket=%d]", v.ProbeID, bv.ContextBucket)
+				tc := junitTestCase{Name: name, Classname: "token-verifier"}
+				switch bv.Verdict {
+				case "fail":
+					suite.Failures++
+					msg := fmt.Sprintf("statistic=%s threshold=%s",
+						statisticText(v.ProbeID, bv.Statistic), thresholdText(v.ProbeID, bv.Threshold))
+					if bv.Warning != "" {
+						msg += "; warning: " + bv.Warning
+					}
+					tc.Failure = &junitFailure{Message: msg, Type: "probe-failed"}
+				case "inconclusive":
+					suite.Skipped++
+					tc.Skipped = &junitSkipped{Message: bv.Note}
+				}
+				suite.Tests++
+				suite.Cases = append(suite.Cases, tc)
+			}
+			continue
+		}
 		tc := junitTestCase{
 			Name:      v.ProbeID,
 			Classname: "token-verifier",
@@ -23,7 +46,8 @@ func JUnit(w io.Writer, res *compare.Result) error {
 		switch v.Verdict {
 		case "fail":
 			suite.Failures++
-			msg := fmt.Sprintf("statistic=%s threshold=%s", statisticText(v), thresholdText(v))
+			msg := fmt.Sprintf("statistic=%s threshold=%s",
+				statisticText(v.ProbeID, v.Statistic), thresholdText(v.ProbeID, v.Threshold))
 			if worst := worstCell(v); worst != nil {
 				msg += "; " + *worst
 			}
@@ -36,6 +60,7 @@ func JUnit(w io.Writer, res *compare.Result) error {
 			tc.Skipped = &junitSkipped{Message: v.Note}
 		}
 		// stdout 报告字段：pass 的 testcase 无子元素
+		suite.Tests++
 		suite.Cases = append(suite.Cases, tc)
 	}
 	// 附注输出到 properties，保证 sampling 差异等信息在 XML 里也可见

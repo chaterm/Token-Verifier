@@ -204,7 +204,7 @@ probes:
     context_buckets: [32000, 128000]
 
 thresholds:            # compare/run 必填 —— 工具不提供默认值
-  onetoken: 0.15
+  onetoken: 0.15       # 档位级覆盖，如 onetoken.32000: 0.2（档位须在 context_buckets 内）
   tokenizer: 0.01
   needle: 0.01
 
@@ -282,10 +282,11 @@ plan_digest  sha256:9f2c1a…   (match)
 coverage     3/3 probes compared
 
 PROBE              STATISTIC   THRESHOLD  SOURCE   VERDICT
-onetoken           0.041 JSD   0.150      config   pass
-tokenizer          p=0.83      α=0.01     config   pass
+onetoken           0.041 JSD   0.15       config   PASS
+tokenizer          p=0.83      α=0.01     config   PASS
 needle             p=0.004     α=0.01     flag     FAIL
-                   └─ bucket 128000: hit 12/40 vs 38/40
+  ├─ bucket 32000  p=0.62      α=0.01     flag     PASS
+  └─ bucket 128000 p=0.004     α=0.01     flag     FAIL
 
 transport (descriptive, not scored)
   availability  0.998 vs 0.994
@@ -294,6 +295,8 @@ transport (descriptive, not scored)
 
 exit 1
 ```
+
+多档位探针按 `context_bucket` 分区、各档位用各自生效的阈值独立判定（`thresholds.needle.128000` 覆盖探针级值），探针行展示最差档位；单档位探针仍是一行，与旧版一致。
 
 加 `-v` 后，判定表之后追加证据明细段 —— 下面这个 `needle` fail 展示了逐 cell 召回率，onetoken 展示了 JSD 背后的实际答案分布：
 

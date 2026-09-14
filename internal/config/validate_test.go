@@ -508,3 +508,35 @@ probes:
 		t.Errorf("anthropic-messages 期望样本 2 < min_n 5 应有警告，得到 %v", warns)
 	}
 }
+
+func TestValidateThresholdBucketKeys(t *testing.T) {
+	suitePath := makeSuite(t)
+	base := baseYAML + suitePath + `
+probes:
+  onetoken: { enabled: true, repeats: 20, temperature: 1.0, max_tokens: 16, context_buckets: [0, 8000] }
+thresholds:
+  onetoken: 0.15
+`
+	// 合法档位键
+	cfg := writeTemp(t, base+"  onetoken.8000: 0.12\n")
+	if err := cfg.Validate(onetokenItems(), func(string) {}); err != nil {
+		t.Errorf("合法档位键不应报错: %v", err)
+	}
+	// 档位不在 context_buckets 内
+	cfg = writeTemp(t, base+"  onetoken.8001: 0.12\n")
+	err := cfg.Validate(onetokenItems(), func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "8001") {
+		t.Errorf("档位笔误应报错并指名: %v", err)
+	}
+	// 非法档位后缀
+	cfg = writeTemp(t, base+"  onetoken.abc: 0.12\n")
+	err = cfg.Validate(onetokenItems(), func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "档位后缀") {
+		t.Errorf("非法后缀应报错: %v", err)
+	}
+	// 未启用/未知探针的档位键宽容忽略（与判定侧一致）
+	cfg = writeTemp(t, base+"  nosuch.8001: 0.12\n")
+	if err := cfg.Validate(onetokenItems(), func(string) {}); err != nil {
+		t.Errorf("未知探针档位键应忽略: %v", err)
+	}
+}

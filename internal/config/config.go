@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -341,6 +342,29 @@ func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)
 		}
 	}
 
+	// —— 阈值键（静态检查；阈值缺失/数值合法性在 ResolveThresholds 判定时查）——
+	// 档位键 <probe>.<bucket> 的后缀必须是整数，且档位在该探针的
+	// context_buckets 内 —— 笔误（如 onetoken.8001）静默不生效是最坑的失败模式。
+	// 只查启用探针：未启用/未知探针的键宽容忽略（与判定侧行为一致）。
+	enabledSet := map[string]bool{}
+	for _, id := range enabled {
+		enabledSet[id] = true
+	}
+	for key := range f.Thresholds {
+		probeID, suffix, has := strings.Cut(key, ".")
+		if !has || !enabledSet[probeID] {
+			continue
+		}
+		b, err := strconv.Atoi(suffix)
+		if err != nil {
+			return fmt.Errorf("thresholds.%s: 档位后缀应为整数（形如 <probe>.<bucket>，例 onetoken.8000）", key)
+		}
+		if !intIn(b, f.Probes[probeID].ContextBuckets) {
+			return fmt.Errorf("thresholds.%s: 档位 %d 不在 probes.%s.context_buckets %v 中",
+				key, b, probeID, f.Probes[probeID].ContextBuckets)
+		}
+	}
+
 	// —— 注入与冲突 ——
 	tempPath := f.Target.Request.TemperatureField
 	for loc, ov := range map[string]map[string]any{"target.request.body_overrides": f.Target.Request.BodyOverrides} {
@@ -488,55 +512,179 @@ func sortStrings(s []string) {
 	}
 }
 
-// ResolvedThreshold 一个探针的已解析阈值及其来源。
+// ResolvedThreshold 一个探针（或探针的某个上下文档位）的已解析阈值及其来源。
 type ResolvedThreshold struct {
 	Value  float64
 	Source string // "flag" | "config"
 }
 
-// ResolveThresholds 为每个待比较探针解析阈值，命令行优先于配置文件。
-// 任一探针缺阈值即报错（错误信息指名缺哪个）；阈值必须为正数，
+// ProbeThresholds 一个探针的阈值集合：档位（context_bucket）专用值 + 探针级兜底。
+// 配置与 --threshold 均支持 <probe>.<bucket> 形式的档位键（如 onetoken.8000）。
+type ProbeThresholds struct {
+	Default  *ResolvedThreshold // probe 级兜底；各档位已全覆盖时可为 nil
+	ByBucket map[int]ResolvedThreshold
+}
+
+// For 返回某档位生效的阈值：档位专用 > 探针级兜底。
+func (t ProbeThresholds) For(bucket int) (ResolvedThreshold, bool) {
+	if th, ok := t.ByBucket[bucket]; ok {
+		return th, true
+	}
+	if t.Default != nil {
+		return *t.Default, true
+	}
+	return ResolvedThreshold{}, false
+}
+
+// ResolveThresholds 为每个待比较探针解析阈值，支持档位级覆盖。
+// probes 为探针 ID → 其 context_buckets（来自采集计划），用于：
+//  1. 枚举需要校验阈值的档位；
+//  2. 拒绝档位键里不在 context_buckets 内的笔误（如 onetoken.8001）。
+//
+// 同一档位内优先级：flag <probe>.<bucket> > config <probe>.<bucket>
+// > flag <probe> > config <probe>；未知探针的键宽容忽略（与旧版一致）。
+// 任一探针的任一档位缺阈值即报错（错误信息指名缺哪个）；阈值必须为有限正数，
 // p 值类（alpha）还须在 (0,1) 内 —— 由调用方按探针统计量类型传入 pValueProbes。
-func ResolveThresholds(probeIDs []string, flagVals map[string]float64, cfg *File, pValueProbes map[string]bool) (map[string]ResolvedThreshold, error) {
-	out := make(map[string]ResolvedThreshold, len(probeIDs))
-	for _, id := range probeIDs {
-		var (
-			val    float64
-			source string
-			ok     bool
-		)
-		if v, has := flagVals[id]; has {
-			val, source, ok = v, "flag", true
-		} else if cfg != nil {
-			if v, has := cfg.Thresholds[id]; has {
-				val, source, ok = v, "config", true
+func ResolveThresholds(probes map[string][]int, flagVals map[string]float64, cfg *File, pValueProbes map[string]bool) (map[string]ProbeThresholds, error) {
+	cfgVals := map[string]float64{}
+	if cfg != nil {
+		cfgVals = cfg.Thresholds
+	}
+	// 档位键先按「键 → (probe, bucket, 来源)」拆解并校验，再逐探针解析。
+	type bucketKey struct {
+		probeID string
+		bucket  int
+	}
+	bucketKeys := map[bucketKey]bool{}
+	for _, m := range []map[string]float64{flagVals, cfgVals} {
+		for key := range m {
+			probeID, suffix, has := strings.Cut(key, ".")
+			if !has {
+				continue
+			}
+			b, err := strconv.Atoi(suffix)
+			if err != nil {
+				return nil, fmt.Errorf("阈值键非法: %q，档位后缀应为整数（形如 <probe>.<bucket>，例 onetoken.8000）", key)
+			}
+			bucketKeys[bucketKey{probeID, b}] = true
+		}
+	}
+	// 档位必须在该探针的 context_buckets 内，否则静默不生效 —— 笔误要报错。
+	for _, id := range sortedKeys(probes) {
+		for bk := range bucketKeys {
+			if bk.probeID != id {
+				continue
+			}
+			if !intIn(bk.bucket, probes[id]) {
+				return nil, fmt.Errorf("阈值键非法: %s.%d，档位 %d 不在 probes.%s.context_buckets %v 中",
+					id, bk.bucket, bk.bucket, id, probes[id])
 			}
 		}
-		if !ok {
-			return nil, MissingThresholdError{ProbeID: id}
-		}
+	}
+
+	validate := func(key string, val float64) error {
 		// NaN 与任何数比较都为 false，会绕过下面的区间检查并让判定恒 pass；
 		// ±Inf 同样让某一侧判定失效。三者都必须在入口拒绝。
 		if math.IsNaN(val) || math.IsInf(val, 0) {
-			return nil, fmt.Errorf("阈值非法: probe %s = %v，必须是有限正数", id, val)
+			return fmt.Errorf("阈值非法: %s = %v，必须是有限正数", key, val)
 		}
 		if val <= 0 {
-			return nil, fmt.Errorf("阈值非法: probe %s = %v，必须为正数", id, val)
+			return fmt.Errorf("阈值非法: %s = %v，必须为正数", key, val)
 		}
-		if pValueProbes[id] && val >= 1 {
-			return nil, fmt.Errorf("阈值非法: probe %s = %v，alpha 须在 (0,1) 内", id, val)
+		// 档位键（onetoken.8000）按探针 ID 归到 p 值类
+		probeID, _, _ := strings.Cut(key, ".")
+		if pValueProbes[probeID] && val >= 1 {
+			return fmt.Errorf("阈值非法: %s = %v，alpha 须在 (0,1) 内", key, val)
 		}
-		out[id] = ResolvedThreshold{Value: val, Source: source}
+		return nil
+	}
+
+	out := make(map[string]ProbeThresholds, len(probes))
+	for _, id := range sortedKeys(probes) {
+		var pt ProbeThresholds
+		// 探针级兜底：flag > config
+		if v, has := flagVals[id]; has {
+			if err := validate(id, v); err != nil {
+				return nil, err
+			}
+			pt.Default = &ResolvedThreshold{Value: v, Source: "flag"}
+		} else if v, has := cfgVals[id]; has {
+			if err := validate(id, v); err != nil {
+				return nil, err
+			}
+			pt.Default = &ResolvedThreshold{Value: v, Source: "config"}
+		}
+		// 档位级：flag <probe>.<bucket> > config <probe>.<bucket>
+		for _, b := range probes[id] {
+			key := fmt.Sprintf("%s.%d", id, b)
+			var th ResolvedThreshold
+			if v, has := flagVals[key]; has {
+				th = ResolvedThreshold{Value: v, Source: "flag"}
+			} else if v, has := cfgVals[key]; has {
+				th = ResolvedThreshold{Value: v, Source: "config"}
+			} else {
+				continue // 无档位专用值，交给 Default 兜底
+			}
+			if err := validate(key, th.Value); err != nil {
+				return nil, err
+			}
+			if pt.ByBucket == nil {
+				pt.ByBucket = map[int]ResolvedThreshold{}
+			}
+			pt.ByBucket[b] = th
+		}
+		// 兜底缺失时：每个待比较档位都必须有专用值
+		if pt.Default == nil {
+			for _, b := range probes[id] {
+				if _, has := pt.ByBucket[b]; !has {
+					return nil, MissingThresholdError{ProbeID: id, Bucket: &b}
+				}
+			}
+			// 无档位（旧 rawData / 自定义计划）也没有兜底 → 缺阈值
+			if len(probes[id]) == 0 {
+				return nil, MissingThresholdError{ProbeID: id}
+			}
+		}
+		out[id] = pt
 	}
 	return out, nil
 }
 
-// MissingThresholdError 缺少某探针阈值。工具不提供默认阈值（SPEC-CONFIG §7）。
+// sortedKeys 返回 map 键的排序切片，保证确定性。
+func sortedKeys(m map[string][]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// intIn 判断 v 是否在列表内。
+func intIn(v int, list []int) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// MissingThresholdError 缺少某探针（或探针的某档位）的阈值。
+// 工具不提供默认阈值（SPEC-CONFIG §7）。
 type MissingThresholdError struct {
 	ProbeID string
+	Bucket  *int // 非 nil = 缺该档位的专用阈值且无探针级兜底
 }
 
 func (e MissingThresholdError) Error() string {
+	if e.Bucket != nil {
+		return fmt.Sprintf("no threshold for probe %s (context_bucket=%d)\n"+
+			"  用 --threshold %s.%d=<value> 或 --threshold %s=<value>（兜底）提供，\n"+
+			"  或在配置文件的 thresholds 段中设置。本工具不提供默认阈值：\n"+
+			"  合适的阈值取决于模型自身的随机性、部署环境与你的容忍度，只能由使用者标定。",
+			e.ProbeID, *e.Bucket, e.ProbeID, *e.Bucket, e.ProbeID)
+	}
 	return fmt.Sprintf("no threshold for probe %s\n"+
 		"  用 --threshold %s=<value> 提供，或在配置文件的 thresholds 段中设置。\n"+
 		"  本工具不提供默认阈值：合适的阈值取决于模型自身的随机性、部署环境\n"+

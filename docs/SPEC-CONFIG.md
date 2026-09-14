@@ -32,7 +32,7 @@ probes:                       # 启用哪些探针及其采集参数
   toolcall: {...}
 
 thresholds:                   # 比较判据，compare / run 必填；工具不提供默认值
-  onetoken: 0.15
+  onetoken: 0.15              # <probe>.<bucket> 可做档位级覆盖
   tokenizer: 0.01
   needle: 0.01
 
@@ -426,20 +426,36 @@ probes:
 ```yaml
 thresholds:
   onetoken: 0.15        # 分布距离上限，越大越宽松
+  onetoken.0: 0.10      # 可选：档位级覆盖，只对该 context_bucket 生效
+  onetoken.8000: 0.20   # 可选：长上下文噪声大，可放宽
   tokenizer: 0.01       # 卡方检验显著性水平 alpha
   needle: 0.01          # 召回率差异 2×2 卡方的 alpha
   think-effort: 0.01    # Mann-Whitney U + Fisher 合并 p 值的 alpha
   toolcall: 0.05        # 双分量共用：JSD 均值上限 + 合法率卡方 alpha
 ```
 
-**工具不提供任何默认阈值。** `compare` / `run` 时，任一被启用探针缺阈值即拒绝
-执行并退出（`exit 2`），指名缺哪个：
+键有两种形式：`<probe>` 是探针级兜底；`<probe>.<bucket>` 只对某个
+`context_bucket` 档位生效（探针 ID 不含 `.`，因此 `.` 是无歧义分隔符）。
+档位键的档位必须出现在该探针的 `context_buckets` 里，否则报错 ——
+`onetoken.8001` 这类笔误静默不生效是最坑的失败模式，必须在入口拒绝。
+
+**比较按档位分区**：每个 `context_bucket` 用各自生效的阈值独立判定，
+探针级结论取最差档位（rollup 的 `statistic` / `threshold` / `ratio`
+即最差档位的值，`ratio > 1 ⟺ fail` 的不变式保持成立）。报告里
+多档位探针逐档位展开子判定（stdout 子行、JSON `buckets` 数组、
+JUnit 每档位一个 testcase）。某档位样本不足判 inconclusive 时排除该档位、
+不污染整体，并在 warning 里点名；全部档位 inconclusive 才整体 inconclusive。
+
+档位键允许只写满所有档位、不写探针级兜底；此时任缺一个档位即报缺阈值。
+
+**工具不提供任何默认阈值。** `compare` / `run` 时，任一被启用探针
+（的任一档位）缺阈值即拒绝执行并退出（`exit 2`），指名缺哪个：
 
 ```text
-ERROR  no threshold for probe onetoken
-  用 --threshold onetoken=<value> 提供，或在配置文件的 thresholds 段中设置。
-  本工具不提供默认阈值：合适的阈值取决于模型自身的随机性、部署环境
-  与你的容忍度，只能由使用者标定。
+ERROR  no threshold for probe onetoken (context_bucket=8000)
+  用 --threshold onetoken.8000=<value> 或 --threshold onetoken=<value>（兜底）提供，
+  或在配置文件的 thresholds 段中设置。本工具不提供默认阈值：
+  合适的阈值取决于模型自身的随机性、部署环境与你的容忍度，只能由使用者标定。
 exit 2
 ```
 
@@ -447,19 +463,20 @@ exit 2
 使用者做了一个他不知道自己在做的判断 —— 一个天生分布很散的模型用 0.15 会误报，
 一个非常稳定的模型用 0.15 会漏报，而使用者看到 `pass` 不会想到去质疑默认值。
 
-设置方式二选一，命令行覆盖配置文件：
+同一档位内命令行覆盖配置文件，档位级覆盖探针级，四级优先级：
 
 ```
---threshold <probe>=<value>   >   配置文件 thresholds 段
+--threshold <probe>.<bucket>=<v>  >  thresholds.<probe>.<bucket>
+  >  --threshold <probe>=<v>      >  thresholds.<probe>
 ```
 
 ```bash
 tv compare a.rawdata.jsonl.gz b.rawdata.jsonl.gz \
-  --threshold onetoken=0.12 --threshold tokenizer=0.01
+  --threshold onetoken=0.12 --threshold onetoken.8000=0.2 --threshold tokenizer=0.01
 ```
 
-报告的每个探针行都会印出实际取值与来源（`config` / `flag`），所以永远不存在
-「不知道这个判定是按什么标准做的」。
+报告的每个探针行（及档位子行）都会印出实际取值与来源（`config` / `flag`），
+所以永远不存在「不知道这个判定是按什么标准做的」。
 
 ### 标定起点
 
@@ -483,6 +500,13 @@ tv compare a.rawdata.jsonl.gz b.rawdata.jsonl.gz \
 
 **阈值不参与可比性判定。** 它不写进采集计划、不参与 digest，所以改阈值不会让
 你手里的 rawData 与官方基线变得不可比。可比性只由采集参数决定，判据是独立的一层。
+
+**按档位分区的统计代价。** p 值类探针（`tokenizer` / `needle` / `think-effort`）
+此前把各档位的样本池化成一次检验；分区后每个档位独立检验，单次样本量下降、
+功效降低（`lowPowerCells` 警告更易触发），且 B 个档位各按 α 判定时探针级
+族错误率约为 `1-(1-α)^B`（α=0.01、2 档 ≈ 2%）。这是有意的取舍：池化会把
+「短上下文正常、长上下文回归」稀释掉；需要补偿时给长上下文档位单独设更小的 α。
+距离类探针（`onetoken` / `toolcall`）分区只是去掉跨档位求均值的稀释，无功效问题。
 
 ## 8. runtime
 
@@ -567,8 +591,10 @@ padding:
 
 **判据**（仅 `compare` / `run`）
 
-18. 每个启用探针都有阈值（配置或命令行）
-19. 阈值为正数；alpha 类阈值在 `(0, 1)` 内
+18. 每个启用探针的每个档位都有阈值（档位键或探针级兜底，配置或命令行）；
+    档位键 `<probe>.<bucket>` 的档位须在该探针的 `context_buckets` 内，
+    后缀须为整数（未知/未启用探针的键宽容忽略）
+19. 阈值为正数；alpha 类阈值在 `(0, 1)` 内（档位键按探针归类）
 
 **警告（不阻断）**
 
@@ -650,7 +676,8 @@ probes:
     enabled: false
 
 thresholds:
-  onetoken: 0.15        # 分布距离上限
+  onetoken: 0.15        # 分布距离上限（探针级兜底）
+  onetoken.32000: 0.2   # 档位级覆盖：长上下文放宽（须在 context_buckets 内）
   tokenizer: 0.01       # alpha
   needle: 0.01          # alpha
   think-effort: 0.01    # alpha（Mann-Whitney U + Fisher 合并）
