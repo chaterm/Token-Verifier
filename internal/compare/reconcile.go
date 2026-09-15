@@ -61,11 +61,11 @@ type Reconciled struct {
 func ReconcilePlans(rawA, rawB json.RawMessage, digestA, digestB string) (*Reconciled, []FieldDiff, error) {
 	planA, err := parsePlanMirror(rawA)
 	if err != nil {
-		return nil, nil, fmt.Errorf("A 侧采集计划解析失败: %w", err)
+		return nil, nil, fmt.Errorf("解析 A 侧采集计划失败: %w", err)
 	}
 	planB, err := parsePlanMirror(rawB)
 	if err != nil {
-		return nil, nil, fmt.Errorf("B 侧采集计划解析失败: %w", err)
+		return nil, nil, fmt.Errorf("解析 B 侧采集计划失败: %w", err)
 	}
 
 	rec := &Reconciled{
