@@ -375,3 +375,83 @@ func TestE2ERunAcceptsVerboseFlag(t *testing.T) {
 		t.Errorf("run --verbose 缺配置: exit = %d, want 2", code)
 	}
 }
+
+func TestE2ESubsetRelaxableDiff(t *testing.T) {
+	// digest 不等但差异可调和（repeats）：
+	// 严格模式 exit 3；--allow-subset 全 pass → exit 6（不是 0）
+	planB := twoProbePlan()
+	planB["probes"].(map[string]any)["onetoken"].(map[string]any)["repeats"] = 30
+	a := writeFixture(t, "sha256:aa", twoProbePlan(), matchedRecords())
+	b := writeFixture(t, "sha256:bb", planB, matchedRecords())
+	th := []string{"--threshold", "onetoken=0.15", "--threshold", "tokenizer=0.01"}
+
+	if code := run(append([]string{"compare"}, append(th, a, b)...)); code != exitIncompat {
+		t.Errorf("严格模式 exit = %d, want 3", code)
+	}
+	if code := run(append([]string{"compare", "--allow-subset"}, append(th, a, b)...)); code != exitSubset {
+		t.Errorf("--allow-subset 全 pass exit = %d, want 6", code)
+	}
+
+	// JSON 报告带 subset 标记与 scope
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "report.json")
+	code := run(append([]string{"compare", "--allow-subset", "--json", jsonPath}, append(th, a, b)...))
+	if code != exitSubset {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep struct {
+		Subset      bool   `json:"subset"`
+		PlanDigestB string `json:"plan_digest_b"`
+		Scope       *struct {
+			Probes  []string       `json:"probes"`
+			Repeats map[string]int `json:"repeats"`
+		} `json:"scope"`
+	}
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("JSON 报告不合法: %v", err)
+	}
+	if !rep.Subset || rep.PlanDigestB != "sha256:bb" {
+		t.Errorf("subset = %v, plan_digest_b = %q", rep.Subset, rep.PlanDigestB)
+	}
+	if rep.Scope == nil || rep.Scope.Repeats["onetoken"] != 10 {
+		t.Errorf("scope = %+v, want onetoken repeats=10（取小）", rep.Scope)
+	}
+}
+
+func TestE2ESubsetStrictConflictStillRejects(t *testing.T) {
+	// temperature 是 strict 字段：--allow-subset 也拒绝 → exit 3
+	planB := twoProbePlan()
+	planB["probes"].(map[string]any)["onetoken"].(map[string]any)["temperature"] = 0.7
+	a := writeFixture(t, "sha256:aa", twoProbePlan(), matchedRecords())
+	b := writeFixture(t, "sha256:bb", planB, matchedRecords())
+
+	code := run([]string{"compare", "--allow-subset",
+		"--threshold", "onetoken=0.15", "--threshold", "tokenizer=0.01", a, b})
+	if code != exitIncompat {
+		t.Errorf("exit = %d, want 3（strict 冲突子集模式也拒绝）", code)
+	}
+}
+
+func TestE2ESubsetFailPriority(t *testing.T) {
+	// 子集模式下 fail 仍是 exit 1（fail 优先于 subset 标记）
+	planB := twoProbePlan()
+	planB["probes"].(map[string]any)["onetoken"].(map[string]any)["repeats"] = 30
+	recsB := matchedRecords()
+	for i := range recsB {
+		if recsB[i]["probe_id"] == "onetoken" {
+			recsB[i]["observation"] = map[string]any{"value": "42"}
+		}
+	}
+	a := writeFixture(t, "sha256:aa", twoProbePlan(), matchedRecords())
+	b := writeFixture(t, "sha256:bb", planB, recsB)
+
+	code := run([]string{"compare", "--allow-subset",
+		"--threshold", "onetoken=0.15", "--threshold", "tokenizer=0.01", a, b})
+	if code != exitFail {
+		t.Errorf("exit = %d, want 1（fail 优先）", code)
+	}
+}

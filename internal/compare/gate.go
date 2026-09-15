@@ -17,22 +17,36 @@ type FieldDiff struct {
 }
 
 // GateError 采集计划不兼容，比较被拒绝（exit 3）。
+// Subset 为 true 表示拒绝发生在子集模式（--allow-subset）下：
+// strict 字段冲突或交集为空，无法通过放宽调和。
 type GateError struct {
 	DigestA, DigestB string
 	Diffs            []FieldDiff
 	FormatVersionA   int
 	FormatVersionB   int
+	Subset           bool
 }
 
 func (e *GateError) Error() string {
 	return fmt.Sprintf("incompatible collection plans: %s vs %s", e.DigestA, e.DigestB)
 }
 
-// CheckGate 执行 digest 闸门：plan_digest 与 format_version 任一不等即拒绝。
+// CheckGate 执行严格 digest 闸门：plan_digest 与 format_version 任一不等即拒绝。
 // 拒绝时对两侧 collection_plan 做泛化逐字段 diff，帮助定位冲突（DATAFLOW §3.2）。
 func CheckGate(a, b *rawdata.File) error {
+	_, err := Gate(a, b, false)
+	return err
+}
+
+// Gate 执行可比性闸门，返回调和结果。
+//   - format_version 不等：任何模式下都拒绝（文件格式不同，读法都不同）；
+//   - plan_digest 相等：放行，Identical 结果即 A 侧计划原样；
+//   - digest 不等且 allowSubset=false：拒绝（严格闸门，行为与旧版一致）；
+//   - digest 不等且 allowSubset=true：按字段三分法调和（reconcile.go），
+//     strict 字段冲突或交集无探针时仍拒绝。
+func Gate(a, b *rawdata.File, allowSubset bool) (*Reconciled, error) {
 	if a.Manifest.FormatVersion != b.Manifest.FormatVersion {
-		return &GateError{
+		return nil, &GateError{
 			DigestA:        a.Manifest.PlanDigest,
 			DigestB:        b.Manifest.PlanDigest,
 			FormatVersionA: a.Manifest.FormatVersion,
@@ -40,17 +54,52 @@ func CheckGate(a, b *rawdata.File) error {
 		}
 	}
 	if a.Manifest.PlanDigest == b.Manifest.PlanDigest {
-		return nil
+		plan, err := a.Manifest.CollectionPlanParsed()
+		if err != nil {
+			return nil, fmt.Errorf("解析采集计划失败: %w", err)
+		}
+		return ReconciledFromPlan(plan, a.Manifest.PlanDigest), nil
 	}
-	// digest 不等：解析两侧计划做字段级 diff。解析失败不阻断 —— diff 只是给人看的定位信息
+
+	// digest 不等：解析两侧计划做字段级 diff
 	diffs := diffPlans(a.Manifest.CollectionPlan, b.Manifest.CollectionPlan)
-	return &GateError{
-		DigestA:        a.Manifest.PlanDigest,
-		DigestB:        b.Manifest.PlanDigest,
-		FormatVersionA: a.Manifest.FormatVersion,
-		FormatVersionB: b.Manifest.FormatVersion,
-		Diffs:          diffs,
+	if !allowSubset {
+		return nil, &GateError{
+			DigestA:        a.Manifest.PlanDigest,
+			DigestB:        b.Manifest.PlanDigest,
+			FormatVersionA: a.Manifest.FormatVersion,
+			FormatVersionB: b.Manifest.FormatVersion,
+			Diffs:          diffs,
+		}
 	}
+
+	// 子集模式：字段级调和，只有 strict 冲突或空交集才拒绝
+	rec, conflicts, err := ReconcilePlans(a.Manifest.CollectionPlan, b.Manifest.CollectionPlan,
+		a.Manifest.PlanDigest, b.Manifest.PlanDigest)
+	if err != nil {
+		return nil, err
+	}
+	if len(conflicts) > 0 {
+		return nil, &GateError{
+			DigestA:        a.Manifest.PlanDigest,
+			DigestB:        b.Manifest.PlanDigest,
+			FormatVersionA: a.Manifest.FormatVersion,
+			FormatVersionB: b.Manifest.FormatVersion,
+			Diffs:          conflicts,
+			Subset:         true,
+		}
+	}
+	if len(rec.ProbeIDs) == 0 {
+		return nil, &GateError{
+			DigestA:        a.Manifest.PlanDigest,
+			DigestB:        b.Manifest.PlanDigest,
+			FormatVersionA: a.Manifest.FormatVersion,
+			FormatVersionB: b.Manifest.FormatVersion,
+			Diffs:          diffs,
+			Subset:         true,
+		}
+	}
+	return rec, nil
 }
 
 // diffPlans 把两侧 collection_plan 解析成泛型结构后递归比对。

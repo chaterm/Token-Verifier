@@ -16,12 +16,16 @@ import (
 
 // Result 一次比较的完整结果，供报告层渲染。
 type Result struct {
-	PlanDigest string // 两侧一致（闸门已保证）
-	Planned    int    // 计划比较的探针数
+	PlanDigest string // 严格闸门下两侧一致；子集模式下为 A 侧 digest（Scope 给出两侧）
+	Planned    int    // 计划比较的探针数（子集模式下为交集探针数）
 	Compared   int    // 实际算出统计量的探针数
 	Coverage   float64
 	Verdicts   []probe.Verdict
 	Notes      []string // 提示性信息：sampling 差异、数据不完整等
+
+	// Scope 子集模式（--allow-subset）下的比较范围：digest 一致时为 nil。
+	// 报告层据此强制渲染「比较范围」段落，防止缩水的交集被当成完整比较消费。
+	Scope *Scope
 
 	TransportA, TransportB   TransportMetrics
 	IncompleteA, IncompleteB bool // 缺 aggregates 行 = 该侧采集未完成
@@ -29,6 +33,25 @@ type Result struct {
 	// Hists 传输指标的两侧联合直方图（描述性证据，不参与判定）。
 	// 与分位数同源：样本取自两侧全部 record（aggregates 无逐样本数据）。
 	Hists TransportHists
+}
+
+// Scope 子集模式的比较范围描述（DATAFLOW §3.2）。
+type Scope struct {
+	Mode     string           `json:"mode"` // "subset"
+	DigestA  string           `json:"plan_digest_a"`
+	DigestB  string           `json:"plan_digest_b"`
+	Probes   []string         `json:"probes"`
+	MinN     map[string]int   `json:"min_n"` // 生效的单侧样本下限及来源见 Notes
+	Repeats  map[string]int   `json:"repeats"`
+	Excluded []ScopeExclusion `json:"excluded,omitempty"`
+	Notes    []string         `json:"notes,omitempty"`
+}
+
+// Options 比较选项。
+type Options struct {
+	// AllowSubset 允许子集比较：plan_digest 不等时按字段三分法调和
+	// （strict 冲突或交集为空仍拒绝），而非一律拒绝。默认 false。
+	AllowSubset bool
 }
 
 // TransportHists 三个传输指标的联合直方图：A/B 共享分箱边界，
@@ -59,30 +82,28 @@ type Percentiles struct {
 	P50, P90, P99 *float64
 }
 
-// Run 执行完整比较流程：闸门 → 阈值 → 配对 → 逐探针判定 → 汇总。
+// Run 执行完整比较流程（严格闸门）：闸门 → 阈值 → 配对 → 逐探针判定 → 汇总。
 // 闸门失败返回 *GateError；缺阈值返回 config.MissingThresholdError。
 func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File) (*Result, error) {
-	// 1. digest 闸门：任何计划差异一律拒绝，不做部分比较
-	if err := CheckGate(a, b); err != nil {
+	return RunWith(a, b, flagThresholds, cfg, Options{})
+}
+
+// RunWith 执行完整比较流程，可开子集模式：闸门 → 阈值 → 配对 → 逐探针判定 → 汇总。
+// 闸门失败返回 *GateError；缺阈值返回 config.MissingThresholdError。
+func RunWith(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File, opts Options) (*Result, error) {
+	// 1. 可比性闸门：严格模式任何计划差异一律拒绝；子集模式按字段三分法调和
+	rec, err := Gate(a, b, opts.AllowSubset)
+	if err != nil {
 		return nil, err
 	}
 
-	plan, err := a.Manifest.CollectionPlanParsed()
-	if err != nil {
-		return nil, fmt.Errorf("解析采集计划失败: %w", err)
-	}
-
 	// 2. 计划探针（排序保证确定性），查注册表分出已实现 / 未实现
-	probeIDs := make([]string, 0, len(plan.Probes))
-	for id := range plan.Probes {
-		probeIDs = append(probeIDs, id)
-	}
-	sort.Strings(probeIDs)
+	probeIDs := rec.ProbeIDs
 
 	pValueProbes := map[string]bool{}
 	// probeBuckets：已实现探针 → 按档位判定时需要阈值的 context_buckets。
 	// cell_key 不含 context_bucket 维度（旧 rawData / 自定义计划）时为空，
-	// 走单阈值退化路径。
+	// 走单阈值退化路径。子集模式下这里是两侧声明档位的交集。
 	probeBuckets := map[string][]int{}
 	for _, id := range probeIDs {
 		if p, ok := probe.Get(id); ok {
@@ -90,8 +111,8 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 				pValueProbes[id] = true
 			}
 			probeBuckets[id] = nil
-			if BucketedCellKey(plan.Probes[id].CellKey) {
-				probeBuckets[id] = plan.Probes[id].ContextBuckets
+			if BucketedCellKey(rec.Probes[id].CellKey) {
+				probeBuckets[id] = rec.Probes[id].ContextBuckets
 			}
 		}
 	}
@@ -104,13 +125,17 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 	}
 
 	res := &Result{
-		PlanDigest:  a.Manifest.PlanDigest,
+		PlanDigest:  rec.DigestA,
 		Planned:     len(probeIDs),
 		IncompleteA: a.Aggregates == nil,
 		IncompleteB: b.Aggregates == nil,
 		TransportA:  transportOf(a),
 		TransportB:  transportOf(b),
 		Hists:       transportHists(a.Records, b.Records),
+	}
+	if !rec.Identical {
+		res.Scope = buildScope(rec, cfg)
+		res.Notes = append(res.Notes, scopeNotes(rec)...)
 	}
 	if res.IncompleteA {
 		res.Notes = append(res.Notes, "A 侧 rawData 缺 aggregates 行（采集未完成），传输指标由 record 重算")
@@ -137,8 +162,11 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 			})
 			continue
 		}
-		pairs := pairCells(a, b, id, plan.Probes[id].CellKey)
-		minN := plan.Probes[id].MinN
+		pairs := pairCells(a, b, id, rec.Probes[id].CellKey, !rec.Identical)
+		if !rec.Identical && len(probeBuckets[id]) > 0 {
+			pairs = filterPairsByBuckets(pairs, probeBuckets[id])
+		}
+		minN := resolveMinN(cfg, id, rec.Probes[id], rec.BProbes[id], p)
 		var v probe.Verdict
 		if len(probeBuckets[id]) > 1 {
 			v = compareBucketed(p, pairs, thresholds[id], minN)
@@ -165,6 +193,91 @@ func Run(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.File
 		res.Coverage = float64(res.Compared) / float64(res.Planned)
 	}
 	return res, nil
+}
+
+// resolveMinN 解析探针生效的单侧样本下限。min_n 是判据参数而非采集参数
+// （与 thresholds 同类，不进可比性闸门），优先级：
+// 本地 config（probes.<id>.min_n）> 计划烘焙值（A 侧，缺则 B 侧）> DefaultMinN > 探针默认。
+// repeats 取小后使用者常需要下调 min_n，本地 config 必须能覆盖两侧计划里的旧值。
+func resolveMinN(cfg *config.File, id string, planA, planB rawdata.ProbePlan, p probe.Probe) int {
+	if cfg != nil {
+		if pc, ok := cfg.Probes[id]; ok && pc.MinN != nil && *pc.MinN >= 1 {
+			return *pc.MinN
+		}
+	}
+	if planA.MinN >= 1 {
+		return planA.MinN
+	}
+	if planB.MinN >= 1 {
+		return planB.MinN
+	}
+	if v, ok := config.DefaultMinN[id]; ok {
+		return v
+	}
+	return p.Meta().MinN
+}
+
+// buildScope 由调和结果构造报告用的比较范围。min_n 展示生效值
+// （与判定同源：config > plan > default）。
+func buildScope(rec *Reconciled, cfg *config.File) *Scope {
+	sc := &Scope{
+		Mode:     "subset",
+		DigestA:  rec.DigestA,
+		DigestB:  rec.DigestB,
+		Probes:   append([]string(nil), rec.ProbeIDs...),
+		MinN:     map[string]int{},
+		Repeats:  map[string]int{},
+		Excluded: rec.Excluded,
+		Notes:    rec.Notes,
+	}
+	for _, id := range rec.ProbeIDs {
+		pp := rec.Probes[id]
+		if p, ok := probe.Get(id); ok {
+			sc.MinN[id] = resolveMinN(cfg, id, pp, rec.BProbes[id], p)
+		}
+		sc.Repeats[id] = pp.Repeats
+	}
+	return sc
+}
+
+// scopeNotes 把调和结果渲染成人读的 NOTE 行（stdout 报告与 JSON notes 共用）。
+func scopeNotes(rec *Reconciled) []string {
+	var notes []string
+	notes = append(notes, "子集比较（--allow-subset）：两侧采集计划不同，仅比较可调和的交集部分")
+	for _, ex := range rec.Excluded {
+		if ex.Kind == "bucket" && ex.Bucket != nil {
+			notes = append(notes, fmt.Sprintf("排除档位 %s/context_bucket=%d：%s", ex.ProbeID, *ex.Bucket, ex.Reason))
+		} else if ex.Kind == "probe" {
+			notes = append(notes, fmt.Sprintf("排除探针 %s：%s", ex.ProbeID, ex.Reason))
+		}
+	}
+	notes = append(notes, rec.Notes...)
+	return notes
+}
+
+// filterPairsByBuckets 子集模式下把配对 cell 限制在生效档位集合内。
+// 防御性过滤：正常情况单侧档位本就没有对侧 record、不会成对，
+// 但计划与实际数据不一致的 rawData（手工构造/续跑残留）不该把
+// 交集之外的档位混进统计。
+func filterPairsByBuckets(pairs []probe.CellPair, buckets []int) []probe.CellPair {
+	keep := make([]probe.CellPair, 0, len(pairs))
+	for _, pr := range pairs {
+		b, err := strconv.Atoi(pr.Key["context_bucket"])
+		if err != nil {
+			continue
+		}
+		found := false
+		for _, x := range buckets {
+			if x == b {
+				found = true
+				break
+			}
+		}
+		if found {
+			keep = append(keep, pr)
+		}
+	}
+	return keep
 }
 
 // BucketedCellKey 判断计划的 cell_key 是否含 context_bucket 维度。
@@ -318,7 +431,11 @@ func worseThan(a, b probe.BucketVerdict, kind probe.StatKind) bool {
 
 // pairCells 把两侧 record 按 cell_key 分组（仅该探针且 status=success），
 // 返回两侧都存在的配对 cell，按键排序保证确定性。
-func pairCells(a, b *rawdata.File, probeID string, cellKey []string) []probe.CellPair {
+// subset 为 true（子集模式）时，每个 cell 两侧按 repeat_index 升序
+// 截断到相同条数 min(nA, nB)：repeats 取小后，JSD 类统计量（onetoken /
+// toolcall）对两侧样本量不对称敏感（小样本系统性抬高 JSD），降采样让
+// 已标定的阈值继续成立。取前 k 个 repeat_index 而非随机抽样，保证确定性。
+func pairCells(a, b *rawdata.File, probeID string, cellKey []string, subset bool) []probe.CellPair {
 	if len(cellKey) == 0 {
 		cellKey = []string{"question_id", "context_bucket"}
 	}
@@ -335,19 +452,49 @@ func pairCells(a, b *rawdata.File, probeID string, cellKey []string) []probe.Cel
 
 	pairs := make([]probe.CellPair, 0, len(joined))
 	for _, k := range joined {
+		ga, gb := groupA[k], groupB[k]
+		obsA, obsB := ga.obs, gb.obs
+		if subset {
+			n := min(len(obsA), len(obsB))
+			obsA = downsample(ga.items, n)
+			obsB = downsample(gb.items, n)
+		}
 		pairs = append(pairs, probe.CellPair{
-			Key: groupA[k].key,
-			A:   groupA[k].obs,
-			B:   groupB[k].obs,
+			Key: ga.key,
+			A:   obsA,
+			B:   obsB,
 		})
 	}
 	return pairs
 }
 
+// downsample 按 repeat_index 升序稳定排序后取前 n 条观测。
+// 同 repeat_index 的多条 record（重试后重复落盘等）按原文件顺序保持稳定。
+func downsample(items []cellItem, n int) []probe.Observation {
+	sorted := make([]cellItem, len(items))
+	copy(sorted, items)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].repeat < sorted[j].repeat })
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+	out := make([]probe.Observation, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, sorted[i].obs)
+	}
+	return out
+}
+
+// cellItem 一条参与配对的观测及其 repeat_index（降采样排序用）。
+type cellItem struct {
+	obs    probe.Observation
+	repeat int
+}
+
 // cellGroup 一个 cell 的键分量与观测集合。
 type cellGroup struct {
-	key map[string]string
-	obs []probe.Observation
+	key   map[string]string
+	obs   []probe.Observation
+	items []cellItem
 }
 
 // groupByCell 把某探针的 record 按 cell_key 分组；其他探针与键值提取失败的 record 跳过。
@@ -368,6 +515,7 @@ func groupByCell(records []rawdata.Record, probeID string, cellKey []string) map
 			groups[joined] = g
 		}
 		g.obs = append(g.obs, r.Observation)
+		g.items = append(g.items, cellItem{obs: r.Observation, repeat: r.RepeatIndex})
 	}
 	return groups
 }

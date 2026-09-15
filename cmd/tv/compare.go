@@ -44,11 +44,13 @@ func cmdCompare(args []string) int {
 	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var configPath, jsonPath, junitPath, logLevel string
-	var verbose bool
+	var verbose, allowSubset bool
 	thresholds := thresholdFlags{}
 	fs.StringVar(&configPath, "config", "", "配置文件路径（读 thresholds 段）")
 	fs.StringVar(&configPath, "c", "", "配置文件路径（简写）")
 	fs.Var(thresholds, "threshold", "阈值 <probe>=<value>，可重复，优先于配置文件")
+	fs.BoolVar(&allowSubset, "allow-subset", false,
+		"允许子集比较：计划不同时按字段规则调和，只比较交集（strict 字段冲突或交集为空仍拒绝；全 pass 退出码为 6）")
 	fs.StringVar(&jsonPath, "json", "", "另写 JSON 报告到该文件")
 	fs.StringVar(&junitPath, "junit", "", "另写 JUnit XML 报告到该文件")
 	fs.BoolVar(&verbose, "verbose", false, "追加证据明细：逐 cell 分布直方图与传输分布对比")
@@ -93,7 +95,7 @@ func cmdCompare(args []string) int {
 		}
 	}
 
-	res, err := compare.Run(fileA, fileB, thresholds, cfg)
+	res, err := compare.RunWith(fileA, fileB, thresholds, cfg, compare.Options{AllowSubset: allowSubset})
 	var gateErr *compare.GateError
 	switch {
 	case errors.As(err, &gateErr):

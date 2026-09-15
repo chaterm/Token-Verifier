@@ -3,6 +3,7 @@ package main
 // collect / run 的端到端 CLI 测试：httptest 假端点，不打真实 API。
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -284,4 +285,50 @@ func TestCLICollectBadConfig(t *testing.T) {
 	if code != exitUsage {
 		t.Errorf("missing env: exit = %d, want 2", code)
 	}
+}
+
+func TestCLIRunPreflightFormatVersion(t *testing.T) {
+	os.Setenv("TV_CLI_KEY", "sk-cli")
+	defer os.Unsetenv("TV_CLI_KEY")
+	// 基线 format_version 与当前写入器不一致：预检应在采集之前拒绝（exit 3），
+	// 即使 digest 恰好相等、即使 --allow-subset（格式版本任何模式都拒绝）
+	cfgPath, _ := writeCollectFixture(t, "http://127.0.0.1:1")
+	baseline := writeFixtureVersion(t, 2, "sha256:x", twoProbePlan(), matchedRecords())
+
+	code := run([]string{"run", "-c", cfgPath, baseline})
+	if code != exitIncompat {
+		t.Errorf("exit = %d, want 3（format_version 预检先于采集）", code)
+	}
+	code = run([]string{"run", "-c", cfgPath, "--allow-subset", baseline})
+	if code != exitIncompat {
+		t.Errorf("--allow-subset: exit = %d, want 3（格式版本子集模式也拒绝）", code)
+	}
+}
+
+// writeFixtureVersion 同 writeFixture，但可指定 format_version。
+func writeFixtureVersion(t *testing.T, fv int, digest string, plan map[string]any, records []map[string]any) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "f.rawdata.jsonl.gz")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := gzip.NewWriter(out)
+	enc := json.NewEncoder(w)
+	mustEncode(t, enc, map[string]any{
+		"kind": "manifest", "format_version": fv,
+		"plan_digest": digest, "collection_plan": plan,
+	})
+	for _, r := range records {
+		r["kind"] = "record"
+		mustEncode(t, enc, r)
+	}
+	mustEncode(t, enc, map[string]any{"kind": "aggregates", "record_count": len(records)})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

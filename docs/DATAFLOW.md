@@ -179,8 +179,10 @@ rawData 边采边追加写。文件本身即是续跑状态：重启时读回已
 
 **样本量不足的 cell**：比较阶段按下限检查每个 cell 的有效样本数，
 不达标的整个 cell 标 `insufficient` 并剔除，不会伪装成完整数据参与统计。
-下限来自采集计划的 `min_n`（配置 `probes.<id>.min_n`，缺省 onetoken 10、
-tokenizer 1；进 digest，两侧必须一致）。
+下限即 `min_n`（配置 `probes.<id>.min_n`，缺省 onetoken 10、tokenizer 1）。
+`min_n` 随采集计划进 digest，但它是判据参数（只被比较侧消费）：比较时按
+`本地 config > 计划烘焙值 > 缺省` 解析 —— 不带 `-c` 比较时可复现计划里的值，
+带 `-c` 时以使用者的判据为准（见 §3.2）。
 分布距离类探针对样本量尤其敏感 —— 用几个样本估出的分布形状不足以支撑判定。
 
 工具**不设全局请求数 / token 数 / 时长预算闸门**。总请求量在采集前完全由配置
@@ -213,9 +215,9 @@ flowchart TD
 缺一个就 `exit 2` 并指名缺哪个。阈值按 `flag > config` 解析，报告印出每个探针
 实际使用的阈值与来源。
 
-### 3.2 digest 闸门：任何差异一律拒绝
+### 3.2 digest 闸门：默认任何差异一律拒绝，--allow-subset 按字段调和
 
-`plan_digest` 不等即拒绝，**不做部分比较**。同时输出字段级 diff：
+默认（严格模式）：`plan_digest` 不等即拒绝，**不做部分比较**。同时输出字段级 diff：
 
 ```text
 ERROR  incompatible collection plans
@@ -230,6 +232,7 @@ ERROR  incompatible collection plans
     present                           yes        vs  no
 
 3 probes conflict. 两侧必须使用同一 collection plan，本工具不做部分比较。
+如确认只需比较两侧计划的交集，可加 --allow-subset（strict 字段仍须一致）。
 ```
 
 digest 是硬闸，diff 是给人看的定位信息 —— 不是「差异不大就放行」的余地。
@@ -238,6 +241,46 @@ digest 是硬闸，diff 是给人看的定位信息 —— 不是「差异不大
 的判定，在 CI 里会被当成正常结论消费掉，而脚注不会有人读。拒绝会迫使使用者
 处理冲突，这正是应该发生的事 —— 怎么处理交给使用者，工具只负责让冲突无法被
 忽略。
+
+#### 子集模式（--allow-subset）
+
+`tv compare --allow-subset`（`tv run` 同名 flag）把闸门从「digest 逐字节一致」
+放宽为**字段级三分法**，只比较两侧计划可调和的交集：
+
+| 分类 | 字段 | 规则 |
+| :--- | :--- | :--- |
+| strict | plan 层：`suite_version` / `padding_algo_version` / `padding_seed` / `normalize` / `output_contract`；探针层：`probe_version` / `observation_schema` / `normalize_rule` / `cell_key` / `question_ids` / `temperature` / `top_p` / `max_tokens` / `thinking_effort` | 不等仍拒绝（exit 3）。这些字段决定「观测是什么、怎么配对、请求发的是什么」，放宽等于拿两套实验对比 |
+| intersect | `context_buckets` | 按两侧**声明**的档位取交集；单侧独有档位剔除并记录；无交集则该探针整体剔除 |
+| relaxed | `repeats` | 取两侧较小值。cell 内按 `repeat_index` 升序截断到 `min(nA, nB)` 降采样对齐 —— JSD 类统计量对两侧样本量不对称敏感（小样本系统性抬高 JSD），降采样让已标定的阈值继续成立；取前 k 个而非随机抽样，保证确定性 |
+| relaxed | `min_n` | 闸门忽略。min_n 是判据参数而非采集参数（与 thresholds 同类，只被比较侧消费），比较时按 `本地 config > 计划烘焙值 > DefaultMinN > 探针默认` 解析，报告印出生效值。**该解析规则对严格模式同样生效**：digest 一致时两侧烘焙值必然相同，但带 `-c` 比较时本地 config 的值可覆盖它 —— digest 一致不再蕴含判定参数完全一致，这是与 thresholds 对齐的有意取舍 |
+
+探针集合也按交集：disabled 探针不进计划（`plan.Build` 只遍历 enabled 的），
+所以「两侧都存在的探针」天然等价于「两侧都 enabled 的探针」。单侧独有的探针
+剔除并记录原因。`format_version` 不等时任何模式都拒绝。
+
+`question_set_digest` 不参与 plan 层 strict 比对：它是派生字段 —— 全部**启用**
+探针的 `question_ids` 并集的哈希。两侧启用探针集合不同时（如一侧禁用 needle）
+它必然不等，而这正是子集模式要容忍的差异。真实的题库差异由逐探针的
+`question_ids` strict 比对拦截：同一探针两侧题目集合不同照样拒绝。
+两侧该值不等时输出 NOTE 说明。
+
+子集模式对「缩水的交集被当成完整比较」的防护是三重的，对应上文「脚注没人读」
+的失败模式：
+
+1. **显式选择**：默认严格，放宽必须打 flag；
+2. **头部强制段落**：stdout 报告顶部印 `SCOPE` 段（两侧 digest、参与比较的
+   探针与生效 repeats/min_n、被排除的探针/档位及原因），JSON 报告带
+   `subset: true` + `scope` 对象，JUnit 带同名 properties —— 不是脚注，是
+   报告的第一行；
+3. **独立退出码**：子集比较即使全 pass 也返回 `6` 而非 `0`（见 §3.6），
+   CI 无法把它当成完整通过消费。fail（1）与 inconclusive（5）优先级不变。
+
+strict 冲突或交集为空时，子集模式仍走 `report.Reject`（exit 3），措辞标明
+「子集模式下以上 strict 字段冲突仍不可调和」。
+
+**digest 计算不受影响**：`plan_digest` 仍是整个 `collection_plan` 的 SHA-256，
+已发布的官方基线与旧 rawData 继续有效；`EnsureFile` 的续写守卫也保持严格
+（同一文件里混两个 plan 是另一回事，该拒）。
 
 **注意 diff 里不会出现协议与传输的分配差异。** 比例是使用者自己的测试杠杆：
 想验证「不同请求格式下模型行为是否一致」，就按自己选的比例混合；不想验证，
@@ -261,8 +304,8 @@ digest 是硬闸，diff 是给人看的定位信息 —— 不是「差异不大
   （openai 系 = usage 上报的思考 token 数，anthropic-messages = 交付的思考文本
   rune 数），秩检验只允许同单位的样本进同一 cell（见 PROBES.md）
 
-只有两侧都存在的 cell 参与统计。任一侧样本量不达下限（采集计划的 `min_n`，
-可经配置 `probes.<id>.min_n` 调整）时，整个
+只有两侧都存在的 cell 参与统计。任一侧样本量不达下限（`min_n`，解析规则见
+§3.2：本地 config > 计划烘焙值 > 缺省）时，整个
 cell 标 `insufficient` 并剔除，不参与统计量计算。分布距离类探针对样本量敏感，
 用几个样本估出来的分布形状不足以支撑判定。
 
@@ -335,9 +378,10 @@ coverage = 实际比较的探针数 / 计划比较的探针数
 | `0` | 全部探针 pass |
 | `1` | 至少一个探针 fail |
 | `2` | 用法错误、配置非法、缺阈值 |
-| `3` | 采集计划不兼容，拒绝比较 |
+| `3` | 采集计划不兼容，拒绝比较（含 --allow-subset 下的 strict 冲突与空交集） |
 | `4` | 采集阶段致命错误：端点完全不可达（全部请求连接失败、从未收到任何 HTTP 响应）、输出文件不可写、或续跑时 plan_digest 与文件不一致被拒绝 |
 | `5` | 无 fail，但存在 inconclusive 探针（被跳过或全部 cell 样本不足） |
+| `6` | 子集比较（--allow-subset）无 fail 也无 inconclusive：结论只覆盖两侧计划的交集，不是完整通过 |
 
 `4` 的边界刻意收窄：个别请求失败（重试到上限）只是 error record，正常落盘、由
 比较阶段按样本不足处理；端点可达但全部返回 4xx/5xx 同样不是致命错误 —— 那是
@@ -347,8 +391,9 @@ coverage = 实际比较的探针数 / 计划比较的探针数
 `3` 与 `1` 分开是关键：CI 里「测出了差异」和「根本没法比」需要触发不同的处理，
 前者该报警，后者该修配置。`5` 对 `0` 的理由同构：exit 0 的语义是「全部探针
 pass」，一份带 inconclusive 的结果若也返回 0，会在 CI 里被当成正常结论消费掉
-—— 正是 §3.2 批评过的「脚注没人读」失败模式。fail 优先于 inconclusive：
-只要有探针 fail，退出码就是 `1`。
+—— 正是 §3.2 批评过的「脚注没人读」失败模式。`6` 对 `0` 的理由再次同构：
+子集比较的「全 pass」只覆盖交集，范围缩水不该以 exit 0 的形态溜进 CI。
+fail 优先于 inconclusive：只要有探针 fail，退出码就是 `1`。
 
 ## 4. 官方基线与用户实测的同构性
 

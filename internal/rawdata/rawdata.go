@@ -246,6 +246,7 @@ type ProbePlan struct {
 	ProbeVersion      string   `json:"probe_version"`
 	Repeats           int      `json:"repeats"`
 	Temperature       *float64 `json:"temperature"`
+	TopP              *float64 `json:"top_p"`
 	MaxTokens         *int     `json:"max_tokens"`
 	ContextBuckets    []int    `json:"context_buckets"`
 	ThinkingEffort    *string  `json:"thinking_effort"`

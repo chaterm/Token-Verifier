@@ -200,6 +200,18 @@ gzip 压缩的 NDJSON。三段式，每行一个 JSON 对象，用 `kind` 区分
 | `cell_key` | 分组粒度不同，配对方式不同 |
 | `question_ids` | 题目子集不同 |
 
+`question_set_digest` 在 `--allow-subset` 下不参与 strict 比对：它是派生字段
+（全部启用探针 `question_ids` 并集的哈希），两侧启用探针集合不同时必然不等，
+而这正是子集模式容忍的差异；真实题库差异由逐探针的 `question_ids` strict
+比对拦截（见 DATAFLOW §3.2）。
+
+`min_n` 进 digest 是历史决定，语义上它更接近判据参数（只被比较侧消费，
+collect 不读）：`--allow-subset` 的字段调和因此忽略它。生效值按
+`本地 config > 计划烘焙值 > 缺省` 解析（见 DATAFLOW §3.2），**该解析对严格
+模式同样生效** —— 严格模式下它仍随整个 plan 参与 digest 比较（两侧烘焙值
+必然一致），但带 `-c` 比较时本地 config 的 `probes.<id>.min_n` 可以覆盖烘焙值，
+digest 一致不再蕴含判定参数完全一致。这是与 thresholds 对齐的有意取舍。
+
 
 **协议与传输的分配表（`sampling`）不在其中。** 比例是使用者自己的测试杠杆：
 想验证「不同请求格式下模型行为是否一致」，就按自己选的比例混合；不想验证，
@@ -415,15 +427,19 @@ canonical JSON 规则：
 
 ## 6. 比较阶段的读取要求
 
-1. 读第 1 行，取 `plan_digest`。两侧不等 → 逐字段 diff，`exit 3`
-2. 检查 `format_version` 一致
+1. 读第 1 行，取 `plan_digest`。两侧不等 → 严格模式逐字段 diff 后 `exit 3`；
+   `--allow-subset` 下按字段三分法调和（strict 冲突或交集为空仍 `exit 3`，
+   规则见 [DATAFLOW.md](./DATAFLOW.md) §3.2）
+2. 检查 `format_version` 一致（任何模式下不等都拒绝）
 3. 流式读 record，按各探针的 `cell_key` 分组
 4. 只保留 `status=success` 的 record 参与统计
-5. 两侧都存在的 cell 才配对
+5. 两侧都存在的 cell 才配对；子集模式下每 cell 再按 `repeat_index` 升序
+   降采样到 `min(nA, nB)`
 6. 任一侧 `n_valid` 低于该探针要求的下限 → 整个 cell 标 `insufficient` 并剔除
 
 第 6 条的下限由探针自行声明。分布距离类探针对样本量敏感 —— 用少量样本估出的
-分布形状不足以支撑判定，这类 cell 必须剔除而非降权。
+分布形状不足以支撑判定，这类 cell 必须剔除而非降权。子集模式下 `min_n` 的
+生效值按 `本地 config > 计划烘焙值 > 缺省` 解析（判据参数，见 DATAFLOW §3.2）。
 
 ## 7. 脱敏与发布
 

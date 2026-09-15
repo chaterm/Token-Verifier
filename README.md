@@ -141,7 +141,7 @@ In CI, the stable download URL keeps pipelines simple:
 - run: ./tv run -c token-verifier.yaml baseline.rawdata.jsonl.gz --junit report.xml
 ```
 
-Exit codes are CI-friendly: `0` all probes pass, `1` at least one fail, `3` the two sides are not comparable (a configuration problem, not a measurement), `5` inconclusive — never silently consumed as a "pass". See [CI integration](#use-cases).
+Exit codes are CI-friendly: `0` all probes pass, `1` at least one fail, `3` the two sides are not comparable (a configuration problem, not a measurement), `5` inconclusive, `6` subset comparison (`--allow-subset`) — never silently consumed as a "pass". See [CI integration](#use-cases).
 
 ## Quick Start
 
@@ -354,8 +354,9 @@ Each verdict carries `ratio` — the observed value over the threshold, defined 
 | `3` | Collection plans are incompatible — comparison refused |
 | `4` | Fatal error during collection |
 | `5` | No failure, but at least one probe was inconclusive (skipped for a missing capability, or all its cells had insufficient samples) |
+| `6` | Subset comparison (`--allow-subset`): no failure and nothing inconclusive, but the verdicts only cover the reconciled intersection of the two plans — not a full pass |
 
-`3` is deliberately distinct from `1`: in CI, "we measured a difference" and "these cannot be compared at all" need different handling. The first should alert; the second should fix a configuration. `5` follows the same reasoning against `0`: an incomplete verdict must not be consumed as "all passed" — exactly the unread-footnote failure mode this tool refuses elsewhere. A failure outranks inconclusive: if any probe failed, the exit code is `1`.
+`3` is deliberately distinct from `1`: in CI, "we measured a difference" and "these cannot be compared at all" need different handling. The first should alert; the second should fix a configuration. `5` follows the same reasoning against `0`: an incomplete verdict must not be consumed as "all passed" — exactly the unread-footnote failure mode this tool refuses elsewhere. `6` follows it once more: a subset comparison's "all pass" covers only the intersection, and a shrunken scope must not slip into CI wearing exit 0. A failure outranks inconclusive: if any probe failed, the exit code is `1`.
 
 When plans differ, the tool refuses and shows exactly where:
 
@@ -371,9 +372,16 @@ ERROR  incompatible collection plans
 
 2 probes conflict. Both sides must use the same collection plan;
 this tool does not perform partial comparisons.
+Add --allow-subset to compare only the reconciled intersection of the two plans.
 ```
 
 Note what does **not** appear in the diff: the protocol/transport mix. If one side sampled 70/30 across two protocols and the other used a single protocol, the comparison still proceeds — the mix is your test lever, not part of the plan (see [rawData](#rawdata)).
+
+**Subset comparison (`--allow-subset`)**
+
+By default the gate demands byte-identical plans. `tv compare --allow-subset` (same flag on `tv run`) relaxes it to a field-level trichotomy: sampling and identity fields (`temperature`, `top_p`, `max_tokens`, `thinking_effort`, `probe_version`, `observation_schema`, `normalize_rule`, `cell_key`, plus the whole plan level — suite, padding, normalization) must still match exactly or the comparison is refused; `context_buckets` is intersected (buckets only one side declared are dropped and listed); `repeats` takes the smaller value and each cell is downsampled to `min(nA, nB)` by `repeat_index`, so calibrated JSD thresholds keep holding; `min_n` is ignored by the gate (it is a verdict parameter like `thresholds`, consumed only at compare time) and resolves as `local config > value baked into the plan > default`. The probe set itself is intersected — disabled probes never enter a plan, so "present on both sides" is exactly "enabled on both sides".
+
+The shrunken scope is impossible to miss: stdout prints a `SCOPE` section as the very first block (both digests, participating probes with effective repeats/min_n, every excluded probe/bucket and why), the JSON report carries `"subset": true` plus a `scope` object, JUnit carries the same as properties, and an all-pass subset run exits `6`, never `0`.
 
 ## What It Does Not Do
 

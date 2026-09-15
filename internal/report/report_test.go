@@ -313,3 +313,125 @@ func TestReject(t *testing.T) {
 		}
 	}
 }
+
+func TestStdoutSubsetScope(t *testing.T) {
+	// 子集模式：比较范围强制印在报告顶部
+	bucket := 8000
+	res := sampleResult()
+	res.Scope = &compare.Scope{
+		Mode:    "subset",
+		DigestA: "sha256:9f2c1a4b7d8e9f0123456789abcdef",
+		DigestB: "sha256:41ab7e0000000000000000000000ff",
+		Probes:  []string{"onetoken", "tokenizer"},
+		Repeats: map[string]int{"onetoken": 10, "tokenizer": 1},
+		MinN:    map[string]int{"onetoken": 5},
+		Excluded: []compare.ScopeExclusion{
+			{Kind: "bucket", ProbeID: "onetoken", Bucket: &bucket, Reason: "仅 A 侧计划包含该档位"},
+			{Kind: "probe", ProbeID: "needle", Reason: "仅 B 侧计划包含该探针"},
+		},
+	}
+	var buf bytes.Buffer
+	Stdout(&buf, res)
+	out := buf.String()
+
+	for _, want := range []string{
+		"SCOPE        subset comparison (--allow-subset)",
+		"sha256:9f2c1a…", "sha256:41ab7e…",
+		"onetoken, tokenizer",
+		"repeats=10", "min_n=5",
+		"onetoken/context_bucket=8000",
+		"needle — 仅 B 侧计划包含该探针",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout 缺少 %q:\n%s", want, out)
+		}
+	}
+	// 子集模式下不再印 "(match)"
+	if strings.Contains(out, "(match)") {
+		t.Errorf("子集模式不应印 digest match:\n%s", out)
+	}
+}
+
+func TestJSONSubsetScope(t *testing.T) {
+	res := sampleResult()
+	res.Scope = &compare.Scope{
+		Mode: "subset", DigestA: "sha256:aa", DigestB: "sha256:bb",
+		Probes: []string{"onetoken"}, Repeats: map[string]int{"onetoken": 10},
+	}
+	var buf bytes.Buffer
+	if err := JSON(&buf, res); err != nil {
+		t.Fatal(err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep["subset"] != true || rep["plan_digest_b"] != "sha256:bb" {
+		t.Errorf("subset/plan_digest_b = %v/%v", rep["subset"], rep["plan_digest_b"])
+	}
+	if rep["scope"] == nil {
+		t.Error("应有 scope 段")
+	}
+	// 严格模式（无 Scope）不输出 subset 字段
+	buf.Reset()
+	if err := JSON(&buf, sampleResult()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), `"subset"`) {
+		t.Errorf("严格模式 JSON 不应含 subset:\n%s", buf.String())
+	}
+}
+
+func TestJUnitSubsetProperties(t *testing.T) {
+	bucket := 8000
+	res := sampleResult()
+	res.Scope = &compare.Scope{
+		Mode: "subset", DigestA: "sha256:aa", DigestB: "sha256:bb",
+		Probes: []string{"onetoken"},
+		Excluded: []compare.ScopeExclusion{
+			{Kind: "bucket", ProbeID: "onetoken", Bucket: &bucket, Reason: "仅 A 侧"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := JUnit(&buf, res); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`name="subset" value="true"`,
+		`name="plan_digest_b" value="sha256:bb"`,
+		`name="scope.probes" value="onetoken"`,
+		`name="scope.excluded.onetoken.bucket_8000"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JUnit 缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRejectSubset(t *testing.T) {
+	var buf bytes.Buffer
+	Reject(&buf, &compare.GateError{
+		DigestA: "sha256:aa", DigestB: "sha256:bb", Subset: true,
+		Diffs: []compare.FieldDiff{
+			{Path: "probes.onetoken.temperature", A: "1", B: "0.7"},
+		},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "strict 字段冲突仍不可调和") {
+		t.Errorf("子集拒绝应有专属措辞:\n%s", out)
+	}
+	if strings.Contains(out, "本工具不做部分比较") {
+		t.Errorf("子集拒绝不应印严格模式措辞:\n%s", out)
+	}
+
+	// 严格模式拒绝应提示 --allow-subset 的存在
+	buf.Reset()
+	Reject(&buf, &compare.GateError{DigestA: "sha256:aa", DigestB: "sha256:bb"})
+	if !strings.Contains(buf.String(), "--allow-subset") {
+		t.Errorf("严格拒绝应提示 --allow-subset:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "本工具不做部分比较") {
+		t.Errorf("严格拒绝措辞应保持:\n%s", buf.String())
+	}
+}

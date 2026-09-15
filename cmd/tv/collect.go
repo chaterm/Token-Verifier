@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -75,11 +76,13 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var configPath, jsonPath, junitPath, logLevel string
-	var keep, verbose bool
+	var keep, verbose, allowSubset bool
 	thresholds := thresholdFlags{}
 	fs.StringVar(&configPath, "config", "", "配置文件路径（必填，读 thresholds 段）")
 	fs.StringVar(&configPath, "c", "", "配置文件路径（简写）")
 	fs.Var(thresholds, "threshold", "阈值 <probe>=<value>，可重复，优先于配置文件")
+	fs.BoolVar(&allowSubset, "allow-subset", false,
+		"允许子集比较：与基线计划不同时按字段规则调和，只比较交集（strict 字段冲突或交集为空仍拒绝；全 pass 退出码为 6）")
 	fs.StringVar(&jsonPath, "json", "", "另写 JSON 报告到该文件")
 	fs.StringVar(&junitPath, "junit", "", "另写 JUnit XML 报告到该文件")
 	fs.BoolVar(&verbose, "verbose", false, "追加证据明细：逐 cell 分布直方图与传输分布对比")
@@ -117,7 +120,8 @@ func cmdRun(args []string) int {
 		fmt.Fprintf(os.Stderr, "ERROR  %s: %v\n", baselinePath, err)
 		return exitUsage
 	}
-	// 2. 采集计划与基线兼容（digest 相等；不等则走闸门的字段级 diff 报告）
+	// 2. 采集计划与基线兼容（digest 相等；不等则严格拒绝，或 --allow-subset
+	//    下按字段三分法调和 —— 与 compare 闸门同一套规则，预检提前到花钱之前）
 	cp, err := plan.Build(cfg, st)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
@@ -128,20 +132,12 @@ func cmdRun(args []string) int {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitUsage
 	}
-	if baseline.Manifest.PlanDigest != digest {
-		// 复用 compare 的闸门渲染：造一个只含 manifest 的假 File 即可
-		gateErr := &compare.GateError{
-			DigestA: baseline.Manifest.PlanDigest,
-			DigestB: digest,
-		}
-		if diffs := compare.DiffDigests(baseline.Manifest.CollectionPlan, cp); diffs != nil {
-			gateErr.Diffs = diffs
-		}
-		report.Reject(os.Stderr, gateErr)
-		return exitIncompat
+	rec, code := preflightReconcile(baseline, cp, digest, allowSubset)
+	if code != 0 {
+		return code
 	}
-	// 3. 待比较探针的阈值齐全（与 compare 同一套解析与校验）
-	if code := precheckThresholds(baseline, thresholds, cfg); code != 0 {
+	// 3. 待比较探针的阈值齐全（与 compare 同一套解析与校验；子集模式下按交集档位）
+	if code := precheckThresholds(rec, thresholds, cfg); code != 0 {
 		return code
 	}
 
@@ -170,7 +166,7 @@ func cmdRun(args []string) int {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitCollect
 	}
-	res, err := compare.Run(baseline, fileB, thresholds, cfg)
+	res, err := compare.RunWith(baseline, fileB, thresholds, cfg, compare.Options{AllowSubset: allowSubset})
 	var gateErr *compare.GateError
 	switch {
 	case errors.As(err, &gateErr):
@@ -197,22 +193,85 @@ func cmdRun(args []string) int {
 	return verdictExitCode(res)
 }
 
-// precheckThresholds 采集前检查基线计划中所有已实现探针的阈值是否齐全合法。
-// 与 compare.Run 内的解析完全同源（含档位级阈值），只是提前到花钱之前。
-func precheckThresholds(baseline *rawdata.File, thresholds map[string]float64, cfg *config.File) int {
-	planParsed, err := baseline.Manifest.CollectionPlanParsed()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR  基线采集计划解析失败: %v\n", err)
-		return exitUsage
+// preflightReconcile 采集前的计划兼容性预检（run 子命令）。
+// digest 相等 → 直接放行；不等时严格模式拒绝（复用 compare 的闸门渲染），
+// 子集模式按字段三分法调和 —— strict 冲突或交集为空仍拒绝。
+// 返回的 *compare.Reconciled 供阈值预检按交集档位解析。
+func preflightReconcile(baseline *rawdata.File, cp *plan.CollectionPlan, digest string, allowSubset bool) (*compare.Reconciled, int) {
+	// format_version 不等：任何模式都拒绝（与 compare.Gate 同序）。
+	// 预检补上这道检查，免得花钱采完才在比较闸门被格式版本拦下。
+	if baseline.Manifest.FormatVersion != rawdata.FormatVersion {
+		report.Reject(os.Stderr, &compare.GateError{
+			DigestA:        baseline.Manifest.PlanDigest,
+			DigestB:        digest,
+			FormatVersionA: baseline.Manifest.FormatVersion,
+			FormatVersionB: rawdata.FormatVersion,
+		})
+		return nil, exitIncompat
 	}
+	if baseline.Manifest.PlanDigest == digest {
+		planParsed, err := baseline.Manifest.CollectionPlanParsed()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR  基线采集计划解析失败: %v\n", err)
+			return nil, exitUsage
+		}
+		return compare.ReconciledFromPlan(planParsed, digest), 0
+	}
+
+	// 复用 compare 的闸门渲染：造一个只含 digest 与 diff 的 GateError
+	gateErr := &compare.GateError{
+		DigestA:        baseline.Manifest.PlanDigest,
+		DigestB:        digest,
+		FormatVersionA: baseline.Manifest.FormatVersion,
+		FormatVersionB: rawdata.FormatVersion,
+	}
+	if diffs := compare.DiffDigests(baseline.Manifest.CollectionPlan, cp); diffs != nil {
+		gateErr.Diffs = diffs
+	}
+	if !allowSubset {
+		report.Reject(os.Stderr, gateErr)
+		return nil, exitIncompat
+	}
+
+	// 子集模式：与 compare.Gate 同一套调和规则（本次计划尚未落盘，经 JSON 往返）
+	rawCP, err := json.Marshal(cp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR  采集计划序列化失败: %v\n", err)
+		return nil, exitUsage
+	}
+	rec, conflicts, err := compare.ReconcilePlans(baseline.Manifest.CollectionPlan, rawCP,
+		baseline.Manifest.PlanDigest, digest)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
+		return nil, exitUsage
+	}
+	if len(conflicts) > 0 {
+		gateErr.Diffs = conflicts
+		gateErr.Subset = true
+		report.Reject(os.Stderr, gateErr)
+		return nil, exitIncompat
+	}
+	if len(rec.ProbeIDs) == 0 {
+		gateErr.Subset = true
+		report.Reject(os.Stderr, gateErr)
+		return nil, exitIncompat
+	}
+	return rec, 0
+}
+
+// precheckThresholds 采集前检查调和后计划中所有已实现探针的阈值是否齐全合法。
+// 与 compare.RunWith 内的解析完全同源（含档位级阈值；子集模式下按交集档位），
+// 只是提前到花钱之前。
+func precheckThresholds(rec *compare.Reconciled, thresholds map[string]float64, cfg *config.File) int {
 	pValueProbes := map[string]bool{}
 	probeBuckets := map[string][]int{}
-	for id, pp := range planParsed.Probes {
+	for _, id := range rec.ProbeIDs {
+		pp := rec.Probes[id]
 		if p, ok := probe.Get(id); ok {
 			if p.Meta().StatKind == probe.StatPValue {
 				pValueProbes[id] = true
 			}
-			// 与 compare.Run 同构：cell_key 不含 context_bucket 维度时
+			// 与 compare.RunWith 同构：cell_key 不含 context_bucket 维度时
 			// 只要求探针级阈值（退化路径）
 			probeBuckets[id] = nil
 			if compare.BucketedCellKey(pp.CellKey) {
@@ -220,7 +279,7 @@ func precheckThresholds(baseline *rawdata.File, thresholds map[string]float64, c
 			}
 		}
 	}
-	_, err = config.ResolveThresholds(probeBuckets, thresholds, cfg, pValueProbes)
+	_, err := config.ResolveThresholds(probeBuckets, thresholds, cfg, pValueProbes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitUsage
@@ -232,6 +291,8 @@ func precheckThresholds(baseline *rawdata.File, thresholds map[string]float64, c
 // fail 优先于 inconclusive：测出差异比判定不完整更需要报警。
 // inconclusive → 5：exit 0 的语义是「全部探针 pass」，带 inconclusive 的结果
 // 若也返回 0，会在 CI 里被当成正常结论消费掉。
+// 子集比较 → 6：理由与 5 同构 —— exit 0 的语义是「全部探针 pass」，
+// 一份只覆盖交集的结果若也返回 0，缩水的范围会在 CI 里被当成完整通过。
 func verdictExitCode(res *compare.Result) int {
 	hasFail, hasInconclusive := false, false
 	for _, v := range res.Verdicts {
@@ -247,6 +308,8 @@ func verdictExitCode(res *compare.Result) int {
 		return exitFail
 	case hasInconclusive:
 		return exitInconclusive
+	case res.Scope != nil:
+		return exitSubset
 	}
 	return exitOK
 }

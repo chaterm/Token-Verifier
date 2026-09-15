@@ -10,6 +10,7 @@ import (
 )
 
 // Reject 渲染 digest 闸门的拒绝信息：字段级 diff 按探针分组（DATAFLOW §3.2）。
+// 子集模式（e.Subset）下的拒绝说明 strict 字段冲突或交集为空，措辞相应调整。
 func Reject(w io.Writer, e *compare.GateError) {
 	fmt.Fprintln(w, "ERROR  incompatible collection plans")
 	fmt.Fprintf(w, "  plan_digest  %s  vs  %s\n", e.DigestA, e.DigestB)
@@ -39,7 +40,13 @@ func Reject(w io.Writer, e *compare.GateError) {
 	}
 
 	fmt.Fprintln(w)
+	if e.Subset {
+		fmt.Fprint(w, "子集模式（--allow-subset）下以上 strict 字段冲突仍不可调和；"+
+			"或两侧计划没有可比较的公共部分。\n")
+		return
+	}
 	fmt.Fprintf(w, "两侧必须使用同一 collection plan；本工具不做部分比较。\n")
+	fmt.Fprintf(w, "如确认只需比较两侧计划的交集，可加 --allow-subset（strict 字段仍须一致）。\n")
 }
 
 // splitProbePath 把 "probes.onetoken.repeats" 拆成 ("onetoken", "repeats")。

@@ -99,14 +99,27 @@ suite:
   # sha256: ...               # 可选；给了则加载时必须校验通过
 
 # ── 探针采集参数（全部进 digest）────────────────────────────────────────
+# 可比性闸门默认要求两侧 plan_digest 逐字节一致。tv compare --allow-subset
+# 放宽为字段三分法（docs/DATAFLOW.md §3.2）：
+#   strict     temperature / top_p / max_tokens / thinking_effort /
+#              probe_version / observation_schema / normalize_rule /
+#              cell_key / question_ids —— 不等仍拒绝
+#   intersect  context_buckets —— 按两侧声明的档位取交集，无交集则该探针剔除
+#   relaxed    repeats —— 取两侧较小值，cell 内按 repeat_index 降采样对齐
+#              min_n —— 闸门忽略（判据参数，同 thresholds），比较时按
+#                       config > 计划烘焙值 > 缺省 解析
+# 探针集合本身也按交集：disabled 探针不进计划，「两侧都有」即「两侧都 enabled」。
 probes:
   onetoken:
     enabled: true
     repeats: 10               # 每 cell 总请求数，按协议/传输比例切分
     temperature: 1.0          # < 0.5 会警告：分布可能退化
+    # top_p: 0.95             # 可选；缺省不注入。采样参数，与 temperature 同类
     context_buckets: [0, 8000]   # 0 = 不加填充；须严格递增
     min_n: 10                 # 可选，缺省 10：单侧有效样本下限，
-                              # 不足的 cell 在比较时标 insufficient 剔除
+                              # 不足的 cell 在比较时标 insufficient 剔除。
+                              # 比较时本地 config 的值覆盖计划里的烘焙值
+                              # （--allow-subset 下 repeats 取小后常需下调）
 
   tokenizer:
     enabled: true

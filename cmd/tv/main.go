@@ -16,6 +16,7 @@ const (
 	exitIncompat     = 3 // 采集计划不兼容，拒绝比较
 	exitCollect      = 4 // 采集阶段致命错误（端点不可达、续跑计划不一致、输出不可写）
 	exitInconclusive = 5 // 无 fail，但存在 inconclusive 探针：判定不完整，不能被当作「全部通过」消费
+	exitSubset       = 6 // 子集比较（--allow-subset）无 fail 也无 inconclusive：结论只覆盖两侧计划的交集，不是完整通过
 )
 
 func main() {
@@ -66,6 +67,10 @@ compare 的 flags:
   --threshold <probe>=<v>    直接给阈值，可重复；优先于配置文件。
                              档位级写法 <probe>.<bucket>=<v>（如 onetoken.8000=0.12）
                              只对该 context_bucket 生效，优先于探针级
+  --allow-subset             允许子集比较：两侧采集计划不同时，不再一律拒绝，
+                             按字段规则调和后只比较交集（strict 字段冲突或
+                             交集为空仍拒绝）。报告顶部强制印出比较范围，
+                             全 pass 时退出码为 6 而非 0
   -v, --verbose              追加证据明细：逐 cell 分布直方图与传输分布对比
   --json <file>              另写 JSON 报告（始终含全量 cell 明细与直方图数据）
   --junit <file>             另写 JUnit XML 报告
@@ -80,6 +85,7 @@ collect 的 flags:
 run 的 flags:
   -c, --config <file>        配置文件（必填）
   --threshold <probe>=<v>    同 compare
+  --allow-subset             同 compare（采集前预检也按子集规则放行）
   -v, --verbose              同 compare
   --json / --junit <file>    同 compare
   --keep-rawdata             保留临时 rawData（默认采集完即删）
@@ -88,5 +94,6 @@ run 的 flags:
 退出码:
   0 全部 pass · 1 有 fail · 2 用法/配置/缺阈值 · 3 采集计划不兼容
   4 采集阶段致命错误 · 5 无 fail 但有 inconclusive 探针
+  6 子集比较（--allow-subset）无 fail 也无 inconclusive：结论只覆盖交集
 `)
 }

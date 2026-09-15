@@ -141,7 +141,7 @@ CI 流水线里直接用稳定下载地址，无需额外钉版体操：
 - run: ./tv run -c token-verifier.yaml baseline.rawdata.jsonl.gz --junit report.xml
 ```
 
-退出码对 CI 友好：`0` 全部通过 · `1` 有失败 · `3` 两侧不可比（配置问题而非测量结论）· `5` 结果不完整 —— 永远不会被静默当作「通过」消费。
+退出码对 CI 友好：`0` 全部通过 · `1` 有失败 · `3` 两侧不可比（配置问题而非测量结论）· `5` 结果不完整 · `6` 子集比较（`--allow-subset`）—— 永远不会被静默当作「通过」消费。
 
 ## 快速开始
 
@@ -354,8 +354,9 @@ exit 1
 | `3` | 采集计划不兼容，拒绝比较 |
 | `4` | 采集阶段致命错误 |
 | `5` | 无 fail，但存在 inconclusive 探针（因缺能力被跳过，或全部 cell 样本不足） |
+| `6` | 子集比较（`--allow-subset`）：无 fail 也无 inconclusive，但结论只覆盖两侧计划调和后的交集 —— 不是完整通过 |
 
-`3` 与 `1` 刻意分开：在 CI 里，「测出了差异」和「根本没法比」需要触发不同的处理。前者该报警，后者该修配置。`5` 对 `0` 的理由与此同构：不完整的判定不能被当成「全部通过」消费掉 —— 这正是本工具在别处拒绝的「脚注没人读」失败模式。fail 优先于 inconclusive：只要有探针 fail，退出码就是 `1`。
+`3` 与 `1` 刻意分开：在 CI 里，「测出了差异」和「根本没法比」需要触发不同的处理。前者该报警，后者该修配置。`5` 对 `0` 的理由与此同构：不完整的判定不能被当成「全部通过」消费掉 —— 这正是本工具在别处拒绝的「脚注没人读」失败模式。`6` 再次同构：子集比较的「全 pass」只覆盖交集，缩水的范围不该以 exit 0 的形态溜进 CI。fail 优先于 inconclusive：只要有探针 fail，退出码就是 `1`。
 
 计划不一致时，工具拒绝执行并明确指出差异位置：
 
@@ -371,9 +372,16 @@ ERROR  incompatible collection plans
 
 2 probes conflict. Both sides must use the same collection plan;
 this tool does not perform partial comparisons.
+Add --allow-subset to compare only the reconciled intersection of the two plans.
 ```
 
 注意 diff 里**不会**出现协议与传输的混合比例。若一侧按两个协议 70/30 采样、另一侧只用单一协议，比较仍然照常进行 —— 比例是你的测试杠杆，不属于采集计划（见 [rawData](#rawdata)）。
+
+**子集比较（`--allow-subset`）**
+
+默认闸门要求两侧计划逐字节一致。`tv compare --allow-subset`（`tv run` 同名 flag）把它放宽为字段级三分法：采样与身份类字段（`temperature`、`top_p`、`max_tokens`、`thinking_effort`、`probe_version`、`observation_schema`、`normalize_rule`、`cell_key`，以及 plan 层的题库 / 填充 / 归一化）仍须完全一致，否则照样拒绝；`context_buckets` 取交集（单侧独有的档位剔除并列出）；`repeats` 取两侧较小值，且每个 cell 按 `repeat_index` 降采样到 `min(nA, nB)`，让已标定的 JSD 阈值继续成立；`min_n` 闸门忽略（它是和 `thresholds` 同类的判据参数，只在比较时被消费），生效值按 `本地 config > 计划烘焙值 > 缺省` 解析。探针集合本身也取交集 —— disabled 探针根本不进计划，所以「两侧都存在」恰好等价于「两侧都 enabled」。
+
+缩水的范围不可能被错过：stdout 报告的第一段就是 `SCOPE`（两侧 digest、参与比较的探针与生效 repeats/min_n、每个被排除的探针/档位及原因），JSON 报告带 `"subset": true` 与 `scope` 对象，JUnit 以 properties 携带同样信息，且子集全 pass 的退出码是 `6`，永远不是 `0`。
 
 ## 明确不做的事
 

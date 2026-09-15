@@ -71,8 +71,12 @@ type ProbePlan struct {
 	ObservationSchema string   `json:"observation_schema"`
 	CellKey           []string `json:"cell_key"`
 	QuestionIDs       []string `json:"question_ids"`
-	// MinN 生效的单侧样本下限（配置值或 config.DefaultMinN）。
-	// 影响比较侧统计判定 → 必须进 digest。
+	// MinN 采集时配置生效的单侧样本下限（配置值或 config.DefaultMinN）。
+	// 进 digest 锁住「这批数据是按什么判据下限采的」；但它本质是判据参数
+	// 而非采集参数（collect 侧不读，只被比较侧消费），所以比较时本地 config
+	// 的 probes.<id>.min_n 可覆盖这里的烘焙值（见 compare.resolveMinN，与
+	// thresholds 同类，严格/子集模式一致）。代价是 digest 一致不再蕴含
+	// 判定参数一致 —— 不带 -c 比较时行为可复现，带 -c 时以使用者的判据为准。
 	MinN int `json:"min_n"`
 }
 

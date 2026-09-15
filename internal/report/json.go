@@ -12,16 +12,29 @@ import (
 
 // jsonReport JSON 报告的顶层结构，对齐 README 的报告示例。
 type jsonReport struct {
-	PlanDigest string        `json:"plan_digest"`
-	Coverage   float64       `json:"coverage"`
-	Compared   int           `json:"compared"`
-	Planned    int           `json:"planned"`
-	Probes     []jsonProbe   `json:"probes"`
-	Transport  jsonTransport `json:"transport"`
+	PlanDigest string `json:"plan_digest"`
+	// PlanDigestB 子集模式下 B 侧的 plan_digest；严格模式下省略。
+	PlanDigestB string `json:"plan_digest_b,omitempty"`
+	// Subset 子集模式标记；严格模式下省略。
+	Subset    bool          `json:"subset,omitempty"`
+	Scope     *jsonScope    `json:"scope,omitempty"`
+	Coverage  float64       `json:"coverage"`
+	Compared  int           `json:"compared"`
+	Planned   int           `json:"planned"`
+	Probes    []jsonProbe   `json:"probes"`
+	Transport jsonTransport `json:"transport"`
 	// TransportHistograms 传输指标的两侧联合直方图（描述性证据）：
 	// A/B 共享 edges，counts 逐 bin 对齐；无样本的指标整个为 null。
 	TransportHistograms jsonTransportHists `json:"transport_histograms"`
 	Notes               []string           `json:"notes,omitempty"`
+}
+
+// jsonScope 子集模式的比较范围（机器可读形态）。
+type jsonScope struct {
+	Probes   []string                 `json:"probes"`
+	Repeats  map[string]int           `json:"repeats,omitempty"`
+	MinN     map[string]int           `json:"min_n,omitempty"`
+	Excluded []compare.ScopeExclusion `json:"excluded,omitempty"`
 }
 
 // jsonTransportHists 三个传输指标的直方图。
@@ -130,6 +143,16 @@ func JSON(w io.Writer, res *compare.Result) error {
 			TtftMs:    histOrNil(res.Hists.TtftMs),
 			Tps:       histOrNil(res.Hists.Tps),
 		},
+	}
+	if sc := res.Scope; sc != nil {
+		rep.Subset = true
+		rep.PlanDigestB = sc.DigestB
+		rep.Scope = &jsonScope{
+			Probes:   sc.Probes,
+			Repeats:  sc.Repeats,
+			MinN:     sc.MinN,
+			Excluded: sc.Excluded,
+		}
 	}
 	for _, v := range res.Verdicts {
 		jp := jsonProbe{

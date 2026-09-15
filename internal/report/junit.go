@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/chaterm/token-verifier/internal/compare"
 )
@@ -75,6 +76,23 @@ func JUnit(w io.Writer, res *compare.Result) error {
 	}, junitProperty{
 		Name: "coverage", Value: fmt.Sprintf("%d/%d", res.Compared, res.Planned),
 	})
+	// 子集模式：比较范围进 properties，CI 消费 XML 时同样能看到交集收缩
+	if sc := res.Scope; sc != nil {
+		suite.Properties = append(suite.Properties, junitProperty{
+			Name: "subset", Value: "true",
+		}, junitProperty{
+			Name: "plan_digest_b", Value: sc.DigestB,
+		}, junitProperty{
+			Name: "scope.probes", Value: strings.Join(sc.Probes, ","),
+		})
+		for _, ex := range sc.Excluded {
+			name := "scope.excluded." + ex.ProbeID
+			if ex.Kind == "bucket" && ex.Bucket != nil {
+				name = fmt.Sprintf("scope.excluded.%s.bucket_%d", ex.ProbeID, *ex.Bucket)
+			}
+			suite.Properties = append(suite.Properties, junitProperty{Name: name, Value: ex.Reason})
+		}
+	}
 
 	out, err := xml.MarshalIndent(suite, "", "  ")
 	if err != nil {

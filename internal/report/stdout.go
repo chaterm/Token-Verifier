@@ -14,7 +14,36 @@ import (
 
 // Stdout 渲染 README 风格的人读报告。
 func Stdout(w io.Writer, res *compare.Result) {
-	fmt.Fprintf(w, "plan_digest  %s   (match)\n", truncateDigest(res.PlanDigest))
+	if sc := res.Scope; sc != nil {
+		// 子集模式：比较范围强制印在报告顶部（DATAFLOW §3.2 ——
+		// 脚注没人读，缩水的交集不能看起来像完整比较）
+		fmt.Fprintln(w, "SCOPE        subset comparison (--allow-subset)")
+		fmt.Fprintf(w, "plan_digest  A %s\n", truncateDigest(sc.DigestA))
+		fmt.Fprintf(w, "             B %s\n", truncateDigest(sc.DigestB))
+		fmt.Fprintf(w, "probes       %s\n", strings.Join(sc.Probes, ", "))
+		for _, id := range sc.Probes {
+			var parts []string
+			if r, ok := sc.Repeats[id]; ok {
+				parts = append(parts, fmt.Sprintf("repeats=%d", r))
+			}
+			if n, ok := sc.MinN[id]; ok {
+				parts = append(parts, fmt.Sprintf("min_n=%d", n))
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(w, "  %-16s %s\n", id, strings.Join(parts, " "))
+			}
+		}
+		for _, ex := range sc.Excluded {
+			if ex.Kind == "bucket" && ex.Bucket != nil {
+				fmt.Fprintf(w, "excluded     %s/context_bucket=%d — %s\n", ex.ProbeID, *ex.Bucket, ex.Reason)
+			} else {
+				fmt.Fprintf(w, "excluded     %s — %s\n", ex.ProbeID, ex.Reason)
+			}
+		}
+		fmt.Fprintln(w)
+	} else {
+		fmt.Fprintf(w, "plan_digest  %s   (match)\n", truncateDigest(res.PlanDigest))
+	}
 	fmt.Fprintf(w, "coverage     %d/%d probes compared\n", res.Compared, res.Planned)
 	if res.IncompleteA || res.IncompleteB {
 		fmt.Fprintf(w, "warning      至少一侧 rawData 缺 aggregates，数据不完整\n")
