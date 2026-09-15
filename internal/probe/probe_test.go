@@ -353,3 +353,70 @@ func TestOnetokenCustomMinN(t *testing.T) {
 		t.Errorf("note 应含生效 minN: %q", got.Note)
 	}
 }
+
+func TestTokenizerUnequalCountsNotMismatch(t *testing.T) {
+	// 回归：两侧条数不同（repeats 配置不同或个别请求失败）但取值一致
+	// → 应判 match。旧实现按多重集长度判等会假 MISMATCH。
+	p, _ := Get("tokenizer")
+	pairs := []CellPair{{
+		Key: map[string]string{"question_id": "t1", "context_bucket": "0", "protocol": "openai-chat"},
+		A: []Observation{
+			obs(map[string]int{"prompt_tokens": 128}),
+			obs(map[string]int{"prompt_tokens": 128}),
+			obs(map[string]int{"prompt_tokens": 128}),
+		},
+		B: []Observation{obs(map[string]int{"prompt_tokens": 128})},
+	}}
+	got := p.Compare(pairs, 0.01, 0)
+	if got.Cells[0].Extra["match"] != true {
+		t.Errorf("取值一致、条数不同应判 match: %+v", got.Cells[0])
+	}
+}
+
+func TestTokenizerSetSemantics(t *testing.T) {
+	// 集合语义：两侧去重后的取值集合相等即 match；
+	// 一侧多出不同取值（真实分词差异）仍不 match。
+	p, _ := Get("tokenizer")
+	key := map[string]string{"question_id": "t1", "context_bucket": "0", "protocol": "openai-chat"}
+	cases := []struct {
+		name string
+		a    []int
+		b    []int
+		want bool
+	}{
+		{"重复次数不同", []int{10, 10, 20}, []int{10, 20, 20}, true},
+		{"单值重复", []int{10, 10}, []int{10}, true},
+		{"集合不同", []int{10}, []int{20}, false},
+		{"一侧多一个取值", []int{10, 20}, []int{10}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var a, b []Observation
+			for _, v := range tc.a {
+				a = append(a, obs(map[string]int{"prompt_tokens": v}))
+			}
+			for _, v := range tc.b {
+				b = append(b, obs(map[string]int{"prompt_tokens": v}))
+			}
+			got := p.Compare([]CellPair{{Key: key, A: a, B: b}}, 0.01, 0)
+			if got.Cells[0].Extra["match"] != tc.want {
+				t.Errorf("match = %v, want %v", got.Cells[0].Extra["match"], tc.want)
+			}
+		})
+	}
+}
+
+func TestSetEqual(t *testing.T) {
+	if !setEqual([]int{1, 1, 2}, []int{1, 2, 2}) {
+		t.Error("去重后相等应判 true")
+	}
+	if setEqual([]int{1, 2}, []int{1, 3}) {
+		t.Error("集合不同应判 false")
+	}
+	if !setEqual(nil, nil) {
+		t.Error("空集合相等")
+	}
+	if setEqual([]int{1}, nil) {
+		t.Error("空与非空不等")
+	}
+}

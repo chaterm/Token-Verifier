@@ -59,8 +59,10 @@ func (p tokenizerProbe) Compare(pairs []CellPair, threshold float64, minN int) V
 			continue
 		}
 
-		// 多重集相等（排序后逐元素比对）；repeats=1 时即单值相等
-		match := multisetEqual(a, b)
+		// 取值集合相等：同一 cell 内服务端上报的 prompt_tokens 应恒定，
+		// 两侧比较的是「上报了哪些值」而非条数 —— 条数差异来自 repeats
+		// 配置或个别请求失败，不是分词器差异，不该判 MISMATCH
+		match := setEqual(a, b)
 		total++
 		if match {
 			matched++
@@ -131,15 +133,30 @@ func parseTokenizerValues(obs []Observation) ([]int, bool) {
 	return values, true
 }
 
-// multisetEqual 判断两个已排序的整数切片是否相等。
-func multisetEqual(a, b []int) bool {
-	if len(a) != len(b) {
+// setEqual 判断两个已排序整数切片的去重集合是否相等。
+// 入参已由 parseTokenizerValues 排序，去重后逐元素比对。
+// 不按条数判等：两侧 repeats 不同或个别请求失败时条数天然不等，
+// 但分词器一致性只取决于取值集合。
+func setEqual(a, b []int) bool {
+	da, db := dedupSorted(a), dedupSorted(b)
+	if len(da) != len(db) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	for i := range da {
+		if da[i] != db[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// dedupSorted 去除已排序切片中的相邻重复元素。
+func dedupSorted(xs []int) []int {
+	out := make([]int, 0, len(xs))
+	for i, x := range xs {
+		if i == 0 || x != xs[i-1] {
+			out = append(out, x)
+		}
+	}
+	return out
 }
