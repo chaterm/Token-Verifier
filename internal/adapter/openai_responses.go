@@ -126,9 +126,7 @@ type responsesResponse struct {
 	Status string                `json:"status"`
 	Output []responsesOutputItem `json:"output"`
 	Usage  *responsesUsage       `json:"usage"`
-	Error  *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error  errorField            `json:"error"`
 }
 
 // ParseOnce 解析非流式响应：output 数组按类型归并。
@@ -141,7 +139,7 @@ func (openaiResponsesAdapter) ParseOnce(resp *http.Response) (Response, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return Response{}, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("响应不是合法 JSON: %v", err)}
 	}
-	if out.Error != nil {
+	if out.Error.IsError() {
 		return Response{}, &ProtocolError{Kind: "protocol", Detail: out.Error.Message}
 	}
 	var r Response
@@ -180,9 +178,7 @@ type responsesSSEEvent struct {
 	Item *responsesOutputItem `json:"item"`
 	// response.completed / response.failed / response.incomplete
 	Response *responsesResponse `json:"response"`
-	Error    *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error    errorField         `json:"error"`
 }
 
 // ParseStream 解析 Responses 的 SSE 事件流。
@@ -205,7 +201,7 @@ func (openaiResponsesAdapter) ParseStream(resp *http.Response, onChunk func(Chun
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			return r, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("SSE 事件不是合法 JSON: %v", err)}
 		}
-		if ev.Error != nil {
+		if ev.Error.IsError() {
 			return r, &ProtocolError{Kind: "protocol", Detail: ev.Error.Message}
 		}
 		switch ev.Type {
@@ -236,7 +232,7 @@ func (openaiResponsesAdapter) ParseStream(resp *http.Response, onChunk func(Chun
 			onChunk(Chunk{Done: true})
 		case "response.failed":
 			msg := "响应失败"
-			if ev.Response != nil && ev.Response.Error != nil {
+			if ev.Response != nil && ev.Response.Error.IsError() {
 				msg = ev.Response.Error.Message
 			}
 			return r, &ProtocolError{Kind: "protocol", Detail: msg}

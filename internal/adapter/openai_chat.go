@@ -42,9 +42,7 @@ type openaiResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *openaiUsage `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error errorField   `json:"error"`
 }
 
 // openaiUsage Chat Completions 的 usage 形态（含思考 token 细分）。
@@ -136,7 +134,7 @@ func (openaiChatAdapter) ParseOnce(resp *http.Response) (Response, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return Response{}, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("响应不是合法 JSON: %v", err)}
 	}
-	if out.Error != nil {
+	if out.Error.IsError() {
 		return Response{}, &ProtocolError{Kind: "protocol", Detail: out.Error.Message}
 	}
 	var r Response
@@ -175,9 +173,7 @@ type openaiSSEChunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *openaiUsage `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error errorField   `json:"error"`
 }
 
 // ParseStream 解析 SSE 流。每条 data: 一行是一个事件；data: [DONE] 结束。
@@ -203,7 +199,7 @@ func (openaiChatAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (
 		if err := json.Unmarshal([]byte(payload), &c); err != nil {
 			return r, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("SSE 事件不是合法 JSON: %v", err)}
 		}
-		if c.Error != nil {
+		if c.Error.IsError() {
 			return r, &ProtocolError{Kind: "protocol", Detail: c.Error.Message}
 		}
 		ch := Chunk{}

@@ -45,9 +45,7 @@ type anthropicResponse struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error errorField `json:"error"`
 }
 
 // Render 构造 Messages 请求。
@@ -117,7 +115,7 @@ func (anthropicAdapter) ParseOnce(resp *http.Response) (Response, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return Response{}, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("响应不是合法 JSON: %v", err)}
 	}
-	if out.Error != nil {
+	if out.Error.IsError() {
 		return Response{}, &ProtocolError{Kind: "protocol", Detail: out.Error.Message}
 	}
 	var r Response
@@ -163,9 +161,7 @@ type anthropicSSEEvent struct {
 			InputTokens int `json:"input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Error errorField `json:"error"`
 }
 
 // ParseStream 解析 SSE 流。事件按 event: + data: 两行发出；结束事件 message_stop。
@@ -188,7 +184,7 @@ func (anthropicAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (R
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			return r, &ProtocolError{Kind: "parse", Detail: fmt.Sprintf("SSE 事件不是合法 JSON: %v", err)}
 		}
-		if ev.Error != nil {
+		if ev.Error.IsError() {
 			return r, &ProtocolError{Kind: "protocol", Detail: ev.Error.Message}
 		}
 		switch ev.Type {

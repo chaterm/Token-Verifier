@@ -443,3 +443,100 @@ func TestRenderBodyUsesConfigReservedFields(t *testing.T) {
 		t.Error("非保留字段 ok 应被写入")
 	}
 }
+
+// —— Bedrock 网关容错："error":"" 空字符串 ——
+// AWS Bedrock 在成功响应上附加 "error":""（字符串形态），标准 API 的错误
+// 形态是对象 {"message":...}。空字符串既不能让整包 JSON 解析失败，
+// 也不能被当成协议错误。
+
+func TestParseOnceToleratesEmptyErrorString(t *testing.T) {
+	cases := []struct {
+		name string
+		a    Adapter
+		body string
+	}{
+		{"anthropic", anthropicAdapter{},
+			`{"content":[{"type":"text","text":"42"}],"error":"","usage":{"input_tokens":100,"output_tokens":3}}`},
+		{"openai-chat", openaiChatAdapter{},
+			`{"choices":[{"message":{"content":"42"},"finish_reason":"stop"}],"error":"","usage":{"prompt_tokens":100,"completion_tokens":3}}`},
+		{"openai-responses", openaiResponsesAdapter{},
+			`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"42"}]}],"error":""}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(200)
+				w.Write([]byte(tc.body))
+			})
+			resp, _ := http.Get(srv.URL)
+			out, err := tc.a.ParseOnce(resp)
+			if err != nil {
+				t.Fatalf(`"error":"" 不应判错: %v`, err)
+			}
+			if out.Content != "42" {
+				t.Errorf("Content = %q, want 42", out.Content)
+			}
+		})
+	}
+}
+
+func TestParseStreamToleratesEmptyErrorString(t *testing.T) {
+	t.Run("anthropic", func(t *testing.T) {
+		srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"42\"},\"error\":\"\"}\n\n")
+			io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\",\"error\":\"\"}\n\n")
+		})
+		resp, _ := http.Get(srv.URL)
+		out, err := anthropicAdapter{}.ParseStream(resp, func(Chunk) {})
+		if err != nil {
+			t.Fatalf(`流式 "error":"" 不应判错: %v`, err)
+		}
+		if out.Content != "42" {
+			t.Errorf("Content = %q, want 42", out.Content)
+		}
+	})
+	t.Run("openai-chat", func(t *testing.T) {
+		srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"42\"}}],\"error\":\"\"}\n\n")
+			io.WriteString(w, "data: [DONE]\n\n")
+		})
+		resp, _ := http.Get(srv.URL)
+		out, err := openaiChatAdapter{}.ParseStream(resp, func(Chunk) {})
+		if err != nil {
+			t.Fatalf(`流式 "error":"" 不应判错: %v`, err)
+		}
+		if out.Content != "42" {
+			t.Errorf("Content = %q, want 42", out.Content)
+		}
+	})
+}
+
+func TestParseOnceNonEmptyErrorString(t *testing.T) {
+	// 非空字符串错误（网关直接给错误文案）按协议错误上报，Detail 为该字符串。
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"content":[],"error":"ThrottlingException"}`))
+	})
+	resp, _ := http.Get(srv.URL)
+	_, err := anthropicAdapter{}.ParseOnce(resp)
+	var pe *ProtocolError
+	if !errorsAs(err, &pe) || pe.Kind != "protocol" || pe.Detail != "ThrottlingException" {
+		t.Errorf("err = %v, want protocol error with detail ThrottlingException", err)
+	}
+}
+
+func TestAnthropicParseOnceErrorObject(t *testing.T) {
+	// 回归保护：标准对象形态 {"error":{"message":...}} 仍判协议错误。
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"error":{"message":"invalid_request_error"}}`))
+	})
+	resp, _ := http.Get(srv.URL)
+	_, err := anthropicAdapter{}.ParseOnce(resp)
+	var pe *ProtocolError
+	if !errorsAs(err, &pe) || pe.Kind != "protocol" || pe.Detail != "invalid_request_error" {
+		t.Errorf("err = %v, want protocol error", err)
+	}
+}

@@ -133,6 +133,45 @@ type ProtocolError struct {
 
 func (e *ProtocolError) Error() string { return e.Detail }
 
+// errorField 响应/SSE 事件里 "error" 字段的容错形态。标准 API 的错误是
+// 对象 {"message":...}；AWS Bedrock 网关在成功响应上附加 "error":""
+// （空字符串）—— 空串/null 不是错误，非空字符串按错误文案处理。
+// 零值 = 无错误，直接做值字段用。
+type errorField struct {
+	Message string
+	present bool // 对象形态或非空字符串 = 上报了错误
+}
+
+func (e *errorField) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		return nil
+	}
+	if s[0] == '"' {
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		if v != "" {
+			e.Message = v
+			e.present = true
+		}
+		return nil
+	}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	e.Message = obj.Message
+	e.present = true
+	return nil
+}
+
+// IsError 是否上报了错误（对象形态恒为真，字符串形态非空才为真）。
+func (e *errorField) IsError() bool { return e.present }
+
 // DeepMerge 合并两个 JSON 对象：b 覆盖 a（递归），返回新对象，不改入参。
 // 导出供 collect 层按 SPEC-CONFIG §4.2 的顺序合并全局与 thinking 的 overrides。
 func DeepMerge(a, b map[string]any) map[string]any {

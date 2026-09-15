@@ -41,6 +41,12 @@
 
 ### Fixed
 
+- 适配器容忍网关附加的空字符串 `error` 字段：AWS Bedrock 在成功响应上
+  附加 `"error": ""`（字符串形态），此前三个协议（anthropic-messages /
+  openai-chat / openai-responses）的非流式与流式解析都只认对象形态
+  `{"message":...}`，整包 JSON 解析失败 —— HTTP 200、内容正常的响应被
+  误判为 `status=error, error_kind=parse`。现在空串/null 视为无错误；
+  非空字符串按错误文案上报 protocol 错误；标准对象形态行为不变
 - tokenizer 探针的 cell 判等从「多重集相等（先比条数）」改为「取值集合相等」：
   两侧条数不同（repeats 配置不同、或个别请求重试耗尽失败少一条 record）但
   服务端上报的 `prompt_tokens` 取值一致时，旧实现判 MISMATCH，可能产生假
