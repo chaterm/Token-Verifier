@@ -134,3 +134,23 @@ func TestJSONCarriesEvidence(t *testing.T) {
 		t.Errorf("latency_ms hist edges = %v", lat["edges"])
 	}
 }
+
+// TestVerboseStripsControlChars verbose 输出会原样回显服务端返回的答案取值
+// 与工具名（onetoken dist / toolcall dist 的 key）。恶意端点可以在其中
+// 塞 ANSI 转义序列伪造终端显示；渲染前必须剥掉 C0 控制字符与 ESC。
+func TestVerboseStripsControlChars(t *testing.T) {
+	res := sampleResult()
+	res.Verdicts[0].Cells[0].Extra = map[string]any{
+		"a_dist": map[string]int{"\x1b[31mfake\x07": 5},
+		"b_dist": map[string]int{"ok": 5},
+	}
+	var buf bytes.Buffer
+	Verbose(&buf, res)
+	out := buf.String()
+	if strings.ContainsRune(out, '\x1b') || strings.ContainsRune(out, '\x07') {
+		t.Errorf("verbose 输出含未过滤的控制字符:\n%q", out)
+	}
+	if !strings.Contains(out, "fake") || !strings.Contains(out, "ok") {
+		t.Errorf("过滤后仍应保留可见文本:\n%s", out)
+	}
+}

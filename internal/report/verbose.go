@@ -208,10 +208,28 @@ func renderDist(w io.Writer, a, b map[string]int) {
 	// 表头与数据行同列布局：label │ A 条 计数 │ B 条 计数
 	fmt.Fprintf(w, "     %-*s A %-*s       B\n", labelW, "value", verboseBarWidth, "")
 	for _, k := range sorted {
+		// 取值 key 源自服务端返回的文本（onetoken 答案 / toolcall 工具名），
+		// 渲染前剥控制字符 —— 恶意端点可以用 ANSI 转义序列伪造终端显示。
 		fmt.Fprintf(w, "     %-*s A %-*s %3d   B %-*s %3d\n",
-			labelW, k, verboseBarWidth, bar(a[k], maxN, verboseBarWidth), a[k],
+			labelW, sanitizeTerminal(k), verboseBarWidth, bar(a[k], maxN, verboseBarWidth), a[k],
 			verboseBarWidth, bar(b[k], maxN, verboseBarWidth), b[k])
 	}
+}
+
+// sanitizeTerminal 剥掉 C0 控制字符（含 ESC）与 DEL，替换为空格：
+// 分布取值出现在对齐表格里，换行/制表同样会撕碎布局，一并替换。
+func sanitizeTerminal(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // renderHist 连续量联合直方图：每 bin 一行，区间 + 两侧条形。
