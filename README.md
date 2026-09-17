@@ -41,15 +41,17 @@ Token Verifier turns these concerns into reproducible measurements and comparabl
 
 ## What It Verifies
 
-Five probes, each producing one statistic and one verdict:
+Five probes, each producing one statistic and one verdict (mechanism in [PROBES.md](./docs/PROBES.md)):
 
-| Probe | What it observes | Statistic |
-| :--- | :--- | :--- |
-| **`onetoken`** | The value distribution of very short answers, sampled at temperature 1.0 | Jensen–Shannon divergence between distributions |
-| **`tokenizer`** | Server-reported input token counts on tokenizer-sensitive inputs | Per-item integer equality → contingency chi-square |
-| **`needle`** | Recall of deterministically derived markers buried at declared positions in long context (one needle = one statistical unit) | Per-needle-unit hit counts → 2×2 chi-square |
-| **`think-effort`** | Reasoning-amount distribution at a declared effort level (tokens, or thinking-text chars where the protocol reports no reasoning-token field) | Per-cell (effort × protocol) Mann-Whitney U → Fisher-combined p-value |
-| **`toolcall`** | Tool selection, syntactic argument validity, parallel calls | Selection-distribution JSD + pooled validity-rate chi-square (worst component decides) |
+| Probe | What it observes | Statistic | What it catches |
+| :--- | :--- | :--- | :--- |
+| **`onetoken`** | The value distribution of very short answers, sampled at temperature 1.0 | Jensen–Shannon divergence between distributions | Model swap, quantization change, sampling-parameter tampering |
+| **`tokenizer`** | Server-reported input token counts on tokenizer-sensitive inputs | Per-item integer equality → contingency chi-square | Tokenizer / model-family swap, a middle layer silently rewriting your prompt |
+| **`needle`** | Recall of deterministically derived markers buried at declared positions in long context (one needle = one statistical unit) | Per-needle-unit hit counts → 2×2 chi-square | Silent context truncation, long-context quality degradation, fake window size |
+| **`think-effort`** | Reasoning-amount distribution at a declared effort level (tokens, or thinking-text chars where the protocol reports no reasoning-token field) | Per-cell (effort × protocol) Mann-Whitney U → Fisher-combined p-value | Reasoning disabled, budget cut, effort parameter ignored, claimed thinking vs. delivered text mismatch |
+| **`toolcall`** | Tool selection, syntactic argument validity, parallel calls | Selection-distribution JSD + pooled validity-rate chi-square (worst component decides) | Agent behavior drift, tool-calling capability degradation, claims support but differs in implementation quality |
+
+**Request format (protocol) and context length are two test axes orthogonal to probes — not probes themselves.** Every probe runs across every protocol you declare (`openai-chat` / `anthropic-messages` / `openai-responses`, streaming and non-streaming) and across every context bucket, with verdicts issued independently per `(probe, protocol, context bucket)` slice. The direct consequence: if an endpoint substitutes, truncates, or degrades only under one request format, or only at one context length, it surfaces in that slice alone — it is not diluted by the other, healthy slices into an "averages out fine" verdict. Put differently, **format-specific and length-specific fraud is discoverable too**, not only when looking at the aggregate.
 
 Alongside every request, the coordinator records availability, error rate, timeout rate, TTFT, TPS and end-to-end latency. These are reported as **descriptive** comparisons and do not affect pass/fail unless you explicitly supply a threshold for them — they mostly reflect the network path and momentary load, not model identity, and scoring them produces false positives across regions and time windows.
 
