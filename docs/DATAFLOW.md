@@ -162,8 +162,10 @@ attempt=2  status=success
 于是「一次成功」和「重试两次才成功」在数据里可区分。若用覆盖语义，重试会把
 错误率洗白到 0，而可用性恰恰是要测的东西之一。
 
-`error_kind` 归类：`timeout` · `connection` · `http_4xx` · `http_5xx` ·
-`protocol`（响应结构不符合协议）· `parse`（SSE 或 JSON 解析失败）。
+`error_kind` 归类：`timeout` · `connection` · `http_3xx`（重定向；客户端
+不跟随 —— 恶意端点可用 3xx 把认证头转发到任意第三方主机）· `http_4xx` ·
+`http_5xx` · `protocol`（响应结构不符合协议）· `parse`（SSE 或 JSON 解析
+失败，含响应体超过 512KiB 上限）。
 
 ### 2.6 落盘与续跑
 

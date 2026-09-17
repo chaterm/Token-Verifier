@@ -319,7 +319,7 @@ canonical JSON 规则：
 | :--- | :--- | :--- |
 | `status` | string | `success` \| `error` |
 | `http_code` | int \| null | 未收到响应时为 null |
-| `error_kind` | string \| null | `timeout` \| `connection` \| `http_4xx` \| `http_5xx` \| `protocol` \| `parse` |
+| `error_kind` | string \| null | `timeout` \| `connection` \| `http_3xx` \| `http_4xx` \| `http_5xx` \| `protocol` \| `parse` |
 | `error_detail` | string \| null | 简短错误摘要，不含密钥 |
 | `latency_ms` | int | 整体墙钟 |
 | `ttft_ms` | int \| **null** | **非流式时为 null**，不填 0 |
@@ -330,7 +330,8 @@ canonical JSON 规则：
 而这类占位符一旦透传出去，字段就永久失去意义。
 
 `error_detail` 需过滤：端点回显的错误信息里可能包含请求体片段，而请求头里有
-密钥。写入前做一次密钥值的字面替换。
+密钥。写入前做一次密钥值的字面替换，并按 4KiB 截断 —— 恶意端点可以内嵌
+超大错误文案，超过读回侧单行上限会让证据文件永久不可读。
 
 ### 观测字段
 

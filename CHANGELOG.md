@@ -81,3 +81,25 @@
   非保留字段，端点不识别时可经 `body_overrides` 覆盖
 - **`ToolVersion` 从常量 `0.2.0` 改为由 ldflags 注入（源码构建时为 `dev`）**：发布版 rawData manifest 的 tool_version 将与 git tag 一致
 - 示例配置改为模型无关占位；示例题库精简为 `suites/v1.example.yaml`
+
+### Security
+
+恶意端点威胁模型下的防护（`base_url` 指向的主机本身可能是攻击者，
+均经真实 PoC 复验，详见 SECURITY.md）：
+
+- **不跟随 HTTP 重定向**：此前 `http.Client` 用 Go 默认重定向策略，恶意
+  端点返回 3xx 即可把认证头转发到任意第三方主机 —— Go 默认只剥离
+  `Authorization` 等标准头，anthropic 协议的 `x-api-key` 被原样转发
+  （实测确认），且请求被记为成功。现在 3xx 作为最终响应处理，记新增
+  `error_kind=http_3xx`（不重试，与 4xx 同类），攻击者主机零访问
+- **响应体大小封顶 512KiB**：非流式 `readAll` 与三个协议的流式内容累积
+  （content / reasoning / 工具参数分片）共用同一预算，超限记 `parse`
+  错误。此前 `io.ReadAll` 无上限，恶意端点用 gzip 炸弹（HTTP 透明解压后
+  无限流）实测 30 秒把采集进程内存推到 ~10GB
+- **`error_detail` 落盘前按 4KiB 截断**（rune 边界）：恶意端点可在
+  HTTP 200 响应体内嵌超大 `error.message`，此前无界字符串直达 rawData
+  JSONL 单行；超过读回侧 `bufio.Scanner` 的 16MB 单行上限会让证据文件
+  永久不可读（当次采集收尾即失败）
+- **verbose 报告剥控制字符**：onetoken 答案取值 / toolcall 工具名源自
+  服务端文本，渲染进对齐表格前过滤 C0 控制字符（含 ESC）与 DEL，
+  防 ANSI 转义序列伪造终端显示
