@@ -451,3 +451,7 @@ Also inspired by [MoonshotAI/Kimi-Vendor-Verifier](https://github.com/MoonshotAI
 ## License
 
 Released under the [MIT License](LICENSE).
+
+## Friends
+
+- [linux.do](https://linux.do)

@@ -452,4 +452,8 @@ Token Verifier 的目标是识别可观测的差异与异常，而不是仅凭�
 
 基于 [MIT 许可证](LICENSE) 发布。
 
+## 友链
+
+- [linux.do](https://linux.do)
+
 
