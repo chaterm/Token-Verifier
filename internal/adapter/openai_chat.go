@@ -183,6 +183,7 @@ func (openaiChatAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (
 	// 工具调用按 delta.index 累积：name 只随首个片段到达，arguments 分段拼接
 	toolAcc := map[int]*toolAccum{}
 	var toolOrder []int
+	var budget streamBudget // 内容累积总量上限（防恶意端点无限流撑爆内存）
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -203,10 +204,12 @@ func (openaiChatAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (
 			return r, &ProtocolError{Kind: "protocol", Detail: c.Error.Message}
 		}
 		ch := Chunk{}
+		var parts []string // 本 chunk 新增的累积内容（预算只计增量）
 		if len(c.Choices) > 0 {
 			choice := c.Choices[0]
 			ch.Delta = choice.Delta.Content
 			ch.Reasoning = choice.Delta.Reasoning
+			parts = append(parts, ch.Delta, ch.Reasoning)
 			if choice.FinishReason != "" {
 				r.FinishReason = choice.FinishReason
 			}
@@ -221,7 +224,11 @@ func (openaiChatAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (
 					acc.Name = tc.Function.Name
 				}
 				acc.Args.WriteString(tc.Function.Arguments)
+				parts = append(parts, tc.Function.Arguments)
 			}
+		}
+		if err := budget.add(parts...); err != nil {
+			return r, err
 		}
 		if c.Usage != nil {
 			u := c.Usage.normalize()

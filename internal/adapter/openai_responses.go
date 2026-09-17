@@ -185,6 +185,7 @@ type responsesSSEEvent struct {
 func (openaiResponsesAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (Response, error) {
 	defer func() { _ = resp.Body.Close() }()
 	var r Response
+	var budget streamBudget // 内容累积总量上限（防恶意端点无限流撑爆内存）
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -206,13 +207,22 @@ func (openaiResponsesAdapter) ParseStream(resp *http.Response, onChunk func(Chun
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
+			if err := budget.add(ev.Delta); err != nil {
+				return r, err
+			}
 			r.Content += ev.Delta
 			onChunk(Chunk{Delta: ev.Delta})
 		case "response.reasoning_summary_text.delta":
+			if err := budget.add(ev.Delta); err != nil {
+				return r, err
+			}
 			r.ReasoningContent += ev.Delta
 			onChunk(Chunk{Reasoning: ev.Delta})
 		case "response.output_item.done":
 			if ev.Item != nil && ev.Item.Type == "function_call" {
+				if err := budget.add(ev.Item.Arguments); err != nil {
+					return r, err
+				}
 				r.ToolCalls = append(r.ToolCalls, ToolCall{
 					Name: ev.Item.Name,
 					Args: json.RawMessage(ev.Item.Arguments),

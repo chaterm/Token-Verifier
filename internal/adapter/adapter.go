@@ -265,8 +265,42 @@ func renderBody(skeleton map[string]any, overrides map[string]any, temperatureFi
 	return json.Marshal(m)
 }
 
-// readAll 读完整响应体。
+// maxResponseBodyBytes 单个响应的字节上限（非流式响应体总量 / 流式内容
+// 累积总量）。探针语义只关心极短回答与 usage 计数，512KiB 已远大于任何
+// 合法响应；无上限时恶意端点用 gzip 炸弹或无限 SSE 流可以把采集机内存
+// 吃到耗尽（io.ReadAll / 逐 chunk 累积都不设防）。超限按 parse 错误处理。
+const maxResponseBodyBytes = 512 * 1024
+
+// streamBudget 流式内容累积字节计数器：content / reasoning / 工具参数分片
+// 都计入预算。Scanner 的单行上限拦不住「海量小 chunk」的总量攻击，
+// 这里在每次累积前检查总量。
+type streamBudget struct{ n int }
+
+// add 计入若干增量并检查总量；超限返回 parse 类 ProtocolError（调用方
+// 应立即中止解析并返回，不再累积该增量）。
+func (b *streamBudget) add(parts ...string) error {
+	for _, p := range parts {
+		b.n += len(p)
+	}
+	if b.n > maxResponseBodyBytes {
+		return &ProtocolError{Kind: "parse",
+			Detail: fmt.Sprintf("流式响应内容总量超过上限 %d 字节，已中止读取", maxResponseBodyBytes)}
+	}
+	return nil
+}
+
+// readAll 读完整响应体，总量封顶 maxResponseBodyBytes。
+// 上限按解压后的字节数计（http.Transport 透明解压 gzip），恰好是要
+// 防的内存放大面。超限返回 parse 类 ProtocolError。
 func readAll(resp *http.Response) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
-	return io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxResponseBodyBytes {
+		return nil, &ProtocolError{Kind: "parse",
+			Detail: fmt.Sprintf("响应体超过上限 %d 字节", maxResponseBodyBytes)}
+	}
+	return b, nil
 }

@@ -172,6 +172,7 @@ func (anthropicAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (R
 	var r Response
 	toolAcc := map[int]*toolAccum{}
 	var toolOrder []int
+	var budget streamBudget // 内容累积总量上限（防恶意端点无限流撑爆内存）
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -203,15 +204,24 @@ func (anthropicAdapter) ParseStream(resp *http.Response, onChunk func(Chunk)) (R
 			}
 			switch ev.Delta.Type {
 			case "text_delta":
+				if err := budget.add(ev.Delta.Text); err != nil {
+					return r, err
+				}
 				r.Content += ev.Delta.Text
 				onChunk(Chunk{Delta: ev.Delta.Text})
 			case "thinking_delta":
+				if err := budget.add(ev.Delta.Thinking); err != nil {
+					return r, err
+				}
 				r.ReasoningContent += ev.Delta.Thinking
 				onChunk(Chunk{Reasoning: ev.Delta.Thinking})
 			case "input_json_delta":
 				// 参数片段必须带 index 才能归位；文本/思考增量不依赖它
 				if ev.Index != nil {
 					if acc, ok := toolAcc[*ev.Index]; ok {
+						if err := budget.add(ev.Delta.PartialJSON); err != nil {
+							return r, err
+						}
 						acc.Args.WriteString(ev.Delta.PartialJSON)
 					}
 				}
