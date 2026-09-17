@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chaterm/token-verifier/internal/adapter"
 	"github.com/chaterm/token-verifier/internal/rawdata"
@@ -76,7 +77,17 @@ func New(opts Options) *Client {
 	}
 	return &Client{
 		opts: opts,
-		http: &http.Client{Timeout: time.Duration(opts.TimeoutSec) * time.Second},
+		http: &http.Client{
+			Timeout: time.Duration(opts.TimeoutSec) * time.Second,
+			// 不跟随重定向：base_url 由使用者填入，端点本身可能就是恶意的。
+			// Go 默认策略在跨主机重定向时只剥离 Authorization 等标准头，
+			// x-api-key 这类自定义认证头会被原样转发到 Location 指向的
+			// 任意主机（实测确认）。3xx 作为最终响应交给下面的状态分类，
+			// 记为 http_3xx 错误。
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -141,8 +152,13 @@ func (c *Client) Do(ctx context.Context, t Task) Result {
 		body := readSnippet(resp.Body)
 		_ = resp.Body.Close()
 		kind := "http_4xx"
-		if resp.StatusCode >= 500 {
+		switch {
+		case resp.StatusCode >= 500:
 			kind = "http_5xx"
+		case resp.StatusCode >= 300 && resp.StatusCode < 400:
+			// CheckRedirect 已拒绝跟随：重定向本身是证据（端点接线异常或
+			// 恶意转发），单独归类，不参与重试。
+			kind = "http_3xx"
 		}
 		return Result{
 			HTTPCode:  resp.StatusCode,
@@ -241,8 +257,9 @@ func (r *Runner) Run(ctx context.Context, tasks []Task, onAttempt func(idx int, 
 				if res.ErrorKind == "" {
 					return
 				}
-				// 4xx（能力/参数类）重试无意义，直接判失败
-				if res.ErrorKind == "http_4xx" || res.ErrorKind == "protocol" || res.ErrorKind == "parse" {
+				// 3xx/4xx（端点接线、能力/参数类）重试无意义，直接判失败
+				if res.ErrorKind == "http_3xx" || res.ErrorKind == "http_4xx" ||
+					res.ErrorKind == "protocol" || res.ErrorKind == "parse" {
 					return
 				}
 				if attempt == r.client.opts.MaxAttempts-1 {
@@ -310,6 +327,24 @@ func redact(s, secret string) string {
 	return strings.ReplaceAll(s, secret, "***")
 }
 
+// maxErrorDetailBytes error_detail 落盘前的字节上限（含截断标记）。恶意端点
+// 可在 HTTP 200 响应体内嵌巨大 error.message；rawdata 读回侧 bufio.Scanner
+// 单行上限是 16MB，超限会让证据文件（含当次采集收尾的读回）永久不可读。
+const maxErrorDetailBytes = 4096
+
+// capDetail 把错误摘要截断到 maxErrorDetailBytes，截断点回退到 rune 边界，
+// 避免切碎 UTF-8 多字节字符。
+func capDetail(s string) string {
+	if len(s) <= maxErrorDetailBytes {
+		return s
+	}
+	cut := maxErrorDetailBytes - len("…")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
 // —— record 组装 ——
 
 // FillTransport 把 Result 写进 Record 的传输字段。
@@ -327,7 +362,7 @@ func FillTransport(rec *rawdata.Record, mode string, res Result) {
 		rec.Status = "error"
 		kind := res.ErrorKind
 		rec.ErrorKind = &kind
-		detail := res.ErrorMsg
+		detail := capDetail(res.ErrorMsg)
 		rec.ErrorDetail = &detail
 		return
 	}
