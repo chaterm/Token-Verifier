@@ -285,6 +285,57 @@ func TestRenderErrorBreakdownSanitizes(t *testing.T) {
 	}
 }
 
+// 配置缺 suite.path 时，CLI 必须报「哪个字段缺」，而不是 suite.Load 抛出的
+// 空路径 OS 错误（`open : The system cannot find the file specified.`）——
+// 那条把「配置缺字段」伪装成「文件不存在」，是这类错误里最难排查的一种。
+func TestCLICollectConfigErrorNamesField(t *testing.T) {
+	t.Setenv("TV_CLI_KEY", "sk-cli")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	// 除 suite.path 外结构完整
+	yaml := `version: 1
+target:
+  base_url: https://x.example.com
+  api_key_env: TV_CLI_KEY
+  model: m
+  protocols:
+    - id: openai-chat
+      path: /v1/chat/completions
+      weight: 1
+      transport: { stream: 0, non_stream: 1 }
+probes:
+  onetoken:
+    enabled: true
+    repeats: 1
+    context_buckets: [0]
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// TestMain 把全局 stderr 指向了 devNull，这里临时换回管道以断言文案
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	code := run([]string{"collect", "-c", cfgPath, "-o", filepath.Join(dir, "o.gz")})
+	_ = w.Close()
+	os.Stderr = orig
+	out, _ := io.ReadAll(r)
+
+	if code != exitUsage {
+		t.Errorf("exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(string(out), "suite.path") {
+		t.Errorf("应指名 suite.path 字段，实际输出:\n%s", out)
+	}
+	if strings.Contains(string(out), "open :") {
+		t.Errorf("不应出现空路径的 OS 错误:\n%s", out)
+	}
+}
+
 func TestCLIRunPreflight(t *testing.T) {
 	os.Setenv("TV_CLI_KEY", "sk-cli")
 	defer os.Unsetenv("TV_CLI_KEY")

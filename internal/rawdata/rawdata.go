@@ -130,21 +130,49 @@ type File struct {
 
 // Read 打开并读取一个 rawData 文件。
 // 文件不存在、gzip 损坏、JSON 行解析失败、缺 manifest 都返回错误。
+// 错误消息自带文件名且不泄露 OS 原文（如 "The system cannot find the file
+// specified."），调用方不再需要、也不应再自己拼一遍路径。
 func Read(path string) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开 rawData 失败: %w", err)
+		// Error() 不透 OS 原文，但保留 Unwrap 供 errors.Is(fs.ErrNotExist) 判定
+		switch {
+		case os.IsNotExist(err):
+			return nil, &fileError{msg: "rawData 文件不存在", path: path, err: err}
+		case os.IsPermission(err):
+			return nil, &fileError{msg: "rawData 文件不可读", path: path, reason: "权限不足", err: err}
+		default:
+			return nil, &fileError{msg: "rawData 文件不可读", path: path, err: err}
+		}
 	}
 	defer func() { _ = f.Close() }()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, fmt.Errorf("gzip 解压失败: %w", err)
+		return nil, fmt.Errorf("rawData 不是合法的 gzip 文件 %s: %w", path, err)
 	}
 	defer func() { _ = gz.Close() }()
 
 	return parse(gz)
 }
+
+// fileError 读取 rawData 文件的错误：Error() 只印友好文案与路径，把 OS 原文
+// 挡在外面；Unwrap 保留底层错误，调用方仍可用 errors.Is 判定。
+type fileError struct {
+	msg    string
+	path   string
+	reason string // 可选补充（如权限不足）；为空则省略
+	err    error
+}
+
+func (e *fileError) Error() string {
+	if e.reason != "" {
+		return fmt.Sprintf("%s: %s（%s）", e.msg, e.path, e.reason)
+	}
+	return e.msg + ": " + e.path
+}
+
+func (e *fileError) Unwrap() error { return e.err }
 
 // parse 逐行解析 NDJSON。第 1 行必须是 manifest，其余按 kind 分派。
 // bufio.Scanner 只在见到换行符后才返回一行，所以崩溃残留的半行永远不会

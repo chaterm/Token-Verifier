@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -538,5 +540,95 @@ thresholds:
 	cfg = writeTemp(t, base+"  nosuch.8001: 0.12\n")
 	if err := cfg.Validate(onetokenItems(), func(string) {}); err != nil {
 		t.Errorf("未知探针档位键应忽略: %v", err)
+	}
+}
+
+// ValidateStructure 必须能在「不加载题库」的前提下跑完所有结构性检查。
+// 此前 CLI 先 suite.Load 再 Validate，配置缺 suite.path 时报出来的是
+// `open : The system cannot find the file specified.` —— 空路径的 OS 错误，
+// 把「配置缺字段」伪装成「文件不存在」。
+func TestValidateStructureNeedsNoSuite(t *testing.T) {
+	t.Setenv("TV_TEST_KEY", "sk-test")
+
+	// 缺 suite.path：必须报字段名，而不是 OS 层的文件错误
+	noSuite := `version: 1
+target:
+  base_url: https://x.example.com
+  api_key_env: TV_TEST_KEY
+  model: m
+  protocols:
+    - id: openai-chat
+      path: /v1/chat/completions
+      weight: 1
+      transport: { stream: 0, non_stream: 1 }
+probes:
+  onetoken:
+    enabled: true
+    repeats: 1
+    context_buckets: [0]
+`
+	err := writeTemp(t, noSuite).ValidateStructure()
+	if err == nil {
+		t.Fatal("缺 suite.path 应报错")
+	}
+	if !strings.Contains(err.Error(), "suite.path") {
+		t.Errorf("应指名 suite.path 字段，得到: %v", err)
+	}
+	if strings.Contains(err.Error(), "open ") || strings.Contains(err.Error(), "cannot find") {
+		t.Errorf("不应泄露 OS 层文件错误: %v", err)
+	}
+
+	// base_url 非法：同样应在结构性阶段被拦下
+	badURL := strings.Replace(noSuite, "https://x.example.com", "not-a-url", 1)
+	err = writeTemp(t, badURL).ValidateStructure()
+	if err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Errorf("非法 base_url 应报错并指名字段: %v", err)
+	}
+}
+
+// ValidateStructure 是 Validate 的前缀：结构合法的配置不应被它拦下。
+func TestValidateStructurePassesOnValidConfig(t *testing.T) {
+	t.Setenv("TV_TEST_KEY", "sk-test")
+	cfg := writeTemp(t, baseYAML+makeSuite(t)+"\n")
+	if err := cfg.ValidateStructure(); err != nil {
+		t.Errorf("合法配置不应被结构性校验拦下: %v", err)
+	}
+}
+
+// config.Load 的错误必须自带文件名、不再泄露 OS 原文：
+// 「读取配置文件失败: open X: The system cannot find ...」这条把路径
+// 藏在 OS 措辞里，题库文件错误「读取题库失败: open X」则连文件名都没有。
+func TestLoadErrorMessagesIncludePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// 文件不存在：含文件名 + 中文措辞，不含 OS 原文
+	missing := filepath.Join(dir, "nope.yaml")
+	_, err := Load(missing)
+	if err == nil {
+		t.Fatal("文件不存在应报错")
+	}
+	if !strings.Contains(err.Error(), "nope.yaml") {
+		t.Errorf("错误应含文件名: %v", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("应仍能 errors.Is(sk-NotExist) 供调用方判定: %v", err)
+	}
+	for _, leaked := range []string{"The system cannot find", "no such file"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("不应泄露 OS 原文 %q: %v", leaked, err)
+		}
+	}
+
+	// YAML 语法错误：必须指出是哪个文件
+	bad := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(bad, []byte("target: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load(bad)
+	if err == nil {
+		t.Fatal("语法错误应报错")
+	}
+	if !strings.Contains(err.Error(), "bad.yaml") {
+		t.Errorf("解析失败应含文件名: %v", err)
 	}
 }

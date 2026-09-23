@@ -38,7 +38,15 @@ type Writer struct {
 func Append(path string) (*Writer, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("打开 rawData 文件失败: %w", err)
+		// 目录不存在 / 权限不足都走这里：不透 OS 原文，路径自带
+		switch {
+		case os.IsNotExist(err):
+			return nil, &fileError{msg: "rawData 输出路径不可达", path: path, reason: "父目录不存在", err: err}
+		case os.IsPermission(err):
+			return nil, &fileError{msg: "rawData 文件不可写", path: path, reason: "权限不足", err: err}
+		default:
+			return nil, &fileError{msg: "rawData 文件不可写", path: path, err: err}
+		}
 	}
 	w := &Writer{path: path, f: f}
 	w.gz, err = gzip.NewWriterLevel(f, gzip.BestSpeed)

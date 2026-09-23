@@ -146,15 +146,43 @@ type Runtime struct {
 func Load(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		switch {
+		case os.IsNotExist(err):
+			return nil, &fileError{msg: "配置文件不存在", path: path, err: err}
+		case os.IsPermission(err):
+			return nil, &fileError{msg: "配置文件不可读", path: path, reason: "权限不足", err: err}
+		default:
+			return nil, &fileError{msg: "配置文件不可读", path: path, err: err}
+		}
 	}
 	var f File
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("配置文件解析失败: %w", err)
+		// yaml 的报错自带行号但不带文件名：配置一多就不知道在改哪个文件
+		return nil, fmt.Errorf("配置文件语法错误 %s: %w", path, err)
 	}
 	f.ApplyDefaults()
 	return &f, nil
 }
+
+// fileError 文件读取类错误：Error() 只印友好文案与路径，把 OS 原文
+// （Windows 的 "The system cannot find the file specified." / POSIX 的
+// "no such file or directory"）挡在外面；Unwrap 保留底层错误，
+// 调用方仍可用 errors.Is(err, fs.ErrNotExist) 判定。
+type fileError struct {
+	msg    string
+	path   string
+	reason string // 可选补充（如权限不足）；为空则省略
+	err    error
+}
+
+func (e *fileError) Error() string {
+	if e.reason != "" {
+		return fmt.Sprintf("%s: %s（%s）", e.msg, e.path, e.reason)
+	}
+	return e.msg + ": " + e.path
+}
+
+func (e *fileError) Unwrap() error { return e.err }
 
 // ApplyDefaults 填缺省值。capabilities 缺省 {true,true,true,0}：
 // 省略与显式写全 true 等价（Present 标记区分「没写」与「显式全 false」）。
@@ -196,11 +224,11 @@ var knownProtocols = map[string]bool{
 	"anthropic-messages": true,
 }
 
-// Validate 落实 SPEC-CONFIG §10 的校验规则（结构性 1-8、探针与题库 9-14、
-// 注入与冲突 15-17）。任一失败返回错误并指明字段路径；警告经 warn 回调不阻断。
-// suiteItems 为每个启用探针的题库题目（含题目级 thinking_effort），由调用方加载。
-func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)) error {
-	// —— 结构性 ——
+// ValidateStructure 只做不依赖题库的结构性检查（SPEC-CONFIG §10 的 1-8）。
+// 单独拆出来是为了让调用方能在加载题库**之前**先跑一遍：配置缺 suite.path
+// 时 suite.Load 会报一条空路径的 OS 错误（`open : ...`），把「配置缺字段」
+// 伪装成「文件不存在」，极难排查。Validate 内部先调本函数，行为不变。
+func (f *File) ValidateStructure() error {
 	if f.Version != 1 {
 		return fmt.Errorf("version: 必须为 1，收到 %d", f.Version)
 	}
@@ -243,10 +271,13 @@ func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)
 		return fmt.Errorf("target.protocols: 至少一个协议 weight > 0")
 	}
 	if strings.TrimSpace(f.Suite.Path) == "" {
-		return fmt.Errorf("suite.path: 必填")
+		return fmt.Errorf("suite.path: 必填（题库文件路径）")
 	}
 	if _, err := os.Stat(f.Suite.Path); err != nil {
-		return fmt.Errorf("suite.path: %v", err)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("suite.path: 题库文件不存在: %s", f.Suite.Path)
+		}
+		return fmt.Errorf("suite.path: 题库文件 %s 不可读: %v", f.Suite.Path, err)
 	}
 	switch f.Runtime.RawLevel {
 	case "digest":
@@ -256,6 +287,16 @@ func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)
 		return fmt.Errorf("runtime.raw_level: full 档尚未实现（原文与 SSE chunk 落盘），请使用 digest 或降低版本预期")
 	default:
 		return fmt.Errorf("runtime.raw_level: 未知取值 %q（digest | full）", f.Runtime.RawLevel)
+	}
+	return nil
+}
+
+// Validate 落实 SPEC-CONFIG §10 的校验规则（结构性 1-8、探针与题库 9-14、
+// 注入与冲突 15-17）。任一失败返回错误并指明字段路径；警告经 warn 回调不阻断。
+// suiteItems 为每个启用探针的题库题目（含题目级 thinking_effort），由调用方加载。
+func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)) error {
+	if err := f.ValidateStructure(); err != nil {
+		return err
 	}
 
 	// —— 探针与题库 ——

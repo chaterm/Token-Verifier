@@ -190,9 +190,10 @@ func cmdRun(args []string) int {
 
 	// —— 采集前预检：这些检查都廉价，失败不该等到整轮采集（联网、花钱）之后 ——
 	// 1. 基线文件可读
+	// rawdata.Read 的错误自带文件名，这里不再重复前缀
 	baseline, err := rawdata.Read(baselinePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR  %s: %v\n", baselinePath, err)
+		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitUsage
 	}
 	// 2. 采集计划与基线兼容（digest 相等；不等则严格拒绝，或 --allow-subset
@@ -397,6 +398,13 @@ func verdictExitCode(res *compare.Result) int {
 func loadCollectConfig(configPath string) (*config.File, *suite.File, int) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
+		return nil, nil, exitUsage
+	}
+	// 结构性校验前移到加载题库之前：否则配置缺 suite.path 时，suite.Load 会拿
+	// 空路径去读文件，报出 `open : The system cannot find the file specified.`
+	// —— 把「配置缺字段」伪装成「题库文件不存在」。（Validate 内部仍会先跑这一步）
+	if err := cfg.ValidateStructure(); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return nil, nil, exitUsage
 	}

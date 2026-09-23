@@ -1,7 +1,10 @@
 package suite
 
 import (
+	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -365,5 +368,26 @@ probes:
 	}
 	if got := f.ContractFor("number"); got == nil {
 		t.Error("ContractFor(number) = nil")
+	}
+}
+
+// Load 的文件错误必须自带路径与中文措辞，不透 OS 原文；
+// 此前是「读取题库失败: open X: The system cannot find the file specified.」
+func TestLoadErrorMessagesIncludePath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nosuch-suite.yaml")
+	_, err := Load(missing, "")
+	if err == nil {
+		t.Fatal("题库文件不存在应报错")
+	}
+	if !strings.Contains(err.Error(), "nosuch-suite.yaml") {
+		t.Errorf("错误应含文件名: %v", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("应保留 errors.Is(fs.ErrNotExist) 判定: %v", err)
+	}
+	for _, leaked := range []string{"The system cannot find", "no such file", "open "} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("不应泄露 OS 原文 %q: %v", leaked, err)
+		}
 	}
 }

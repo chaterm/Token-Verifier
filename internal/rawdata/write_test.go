@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -260,5 +261,22 @@ func TestBuildAggregatesNewProbeSummaries(t *testing.T) {
 	te := agg.Cells["think-effort|te1|0|low|openai-chat"]
 	if te.N != 1 || len(te.Values) != 1 || te.Values[0] != 512 {
 		t.Errorf("think-effort cell = %+v, want values [512]", te)
+	}
+}
+
+// Append 的文件错误同样不透 OS 原文，自带路径。
+func TestAppendErrorMessagesIncludePath(t *testing.T) {
+	badDir := filepath.Join(t.TempDir(), "nosuchdir", "out.gz")
+	_, err := Append(badDir)
+	if err == nil {
+		t.Fatal("输出目录不存在应报错")
+	}
+	if !strings.Contains(err.Error(), "nosuchdir") {
+		t.Errorf("错误应含路径: %v", err)
+	}
+	for _, leaked := range []string{"The system cannot find", "no such file", "open "} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("不应泄露 OS 原文 %q: %v", leaked, err)
+		}
 	}
 }

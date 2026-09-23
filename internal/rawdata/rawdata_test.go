@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -184,5 +185,40 @@ func TestReadNullTransportFields(t *testing.T) {
 	}
 	if r.HTTPCode == nil || *r.HTTPCode != 200 {
 		t.Errorf("http_code 解析错误: %v", r.HTTPCode)
+	}
+}
+
+// Read 的错误必须自带文件名与中文措辞，不透 OS 原文。
+// 此前 CLI 又要自己拼路径，导致路径出现两次：
+// 「ERROR /tmp/a.gz: 打开 rawData 失败: open /tmp/a.gz: The system cannot ...」
+func TestReadErrorMessagesIncludePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// 文件不存在
+	missing := filepath.Join(dir, "nosuch.gz")
+	_, err := Read(missing)
+	if err == nil {
+		t.Fatal("文件不存在应报错")
+	}
+	if !strings.Contains(err.Error(), "nosuch.gz") {
+		t.Errorf("错误应含文件名: %v", err)
+	}
+	for _, leaked := range []string{"The system cannot find", "no such file", "open "} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("不应泄露 OS 原文 %q: %v", leaked, err)
+		}
+	}
+
+	// 不是 gzip：含文件名
+	plain := filepath.Join(dir, "plain.gz")
+	if err := os.WriteFile(plain, []byte("not gzip at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Read(plain)
+	if err == nil {
+		t.Fatal("非 gzip 应报错")
+	}
+	if !strings.Contains(err.Error(), "plain.gz") {
+		t.Errorf("gzip 错误应含文件名: %v", err)
 	}
 }

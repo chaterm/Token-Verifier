@@ -135,7 +135,15 @@ func (s ProbeSet) ThinkingEffortOf(it Item) string {
 func Load(path, wantSHA256 string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取题库失败: %w", err)
+		// Error() 不透 OS 原文，但保留 Unwrap 供 errors.Is(fs.ErrNotExist) 判定
+		switch {
+		case os.IsNotExist(err):
+			return nil, &fileError{msg: "题库文件不存在", path: path, err: err}
+		case os.IsPermission(err):
+			return nil, &fileError{msg: "题库文件不可读", path: path, reason: "权限不足", err: err}
+		default:
+			return nil, &fileError{msg: "题库文件不可读", path: path, err: err}
+		}
 	}
 	if wantSHA256 != "" {
 		sum := sha256.Sum256(data)
@@ -145,13 +153,31 @@ func Load(path, wantSHA256 string) (*File, error) {
 	}
 	var f File
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("题库解析失败: %w", err)
+		return nil, fmt.Errorf("题库语法错误 %s: %w", path, err)
 	}
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
 	return &f, nil
 }
+
+// fileError 读取题库文件的错误：Error() 只印友好文案与路径，把 OS 原文
+// 挡在外面；Unwrap 保留底层错误，调用方仍可用 errors.Is 判定。
+type fileError struct {
+	msg    string
+	path   string
+	reason string // 可选补充（如权限不足）；为空则省略
+	err    error
+}
+
+func (e *fileError) Error() string {
+	if e.reason != "" {
+		return fmt.Sprintf("%s: %s（%s）", e.msg, e.path, e.reason)
+	}
+	return e.msg + ": " + e.path
+}
+
+func (e *fileError) Unwrap() error { return e.err }
 
 // builtinRules 机理规则：提取算法在代码里，不需要词表。
 var builtinRules = map[string]bool{

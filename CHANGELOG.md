@@ -23,6 +23,17 @@
   显示，凡把端点文本写终端处一律先过它；落盘的 `error_detail` 仍保留原始
   字节（证据不被渲染层改写）。`report` 包原有的同名私有实现改为复用它
 
+### Fixed
+
+- 配置/题库/rawData 的文件类错误文案：错误自带文件名与中文措辞，不再泄露
+  OS 原文（`The system cannot find the file specified.`）。此前 compare
+  对缺失文件的报错里路径会出现两次（`ERROR X: 打开 rawData 失败: open X: ...`），
+  配置语法错误则不带文件名（`配置文件解析失败: yaml: line 1: ...`）。
+  `errors.Is(err, fs.ErrNotExist)` 判定语义保留
+- 配置缺 `suite.path` 时不再报空路径的 OS 错误（`读取题库失败: open : ...`）：
+  结构性校验拆为 `config.ValidateStructure()`，在加载题库**之前**先跑，
+  直接报「suite.path: 必填（题库文件路径）」
+
 ### Added
 
 - GitHub Actions CI：gofmt / go vet / go test 三平台矩阵 + golangci-lint

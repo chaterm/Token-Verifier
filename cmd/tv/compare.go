@@ -74,14 +74,15 @@ func cmdCompare(args []string) int {
 	log.Debug("compare 开始", "file_a", fs.Arg(0), "file_b", fs.Arg(1))
 
 	pathA, pathB := fs.Arg(0), fs.Arg(1)
+	// rawdata.Read 的错误自带文件名，这里不再重复前缀
 	fileA, err := rawdata.Read(pathA)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR  %s: %v\n", pathA, err)
+		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitUsage
 	}
 	fileB, err := rawdata.Read(pathB)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR  %s: %v\n", pathB, err)
+		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitUsage
 	}
 
