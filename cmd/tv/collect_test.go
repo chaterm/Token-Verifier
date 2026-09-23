@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/chaterm/token-verifier/internal/collect"
 )
 
 // fakeChatEP 假 openai-chat 端点（与 internal/collect 的 fakeOpenAI 同型）。
@@ -195,6 +197,91 @@ func TestCLICollectUnreachableEndpoint(t *testing.T) {
 	code := run([]string{"collect", "-c", cfgPath, "-o", out})
 	if code != exitCollect {
 		t.Errorf("unreachable: exit = %d, want 4", code)
+	}
+}
+
+// 采集摘要必须把「为什么失败」印出来：分类计数 + 端点原话 + 排查方向。
+// 此前只有「成功 0 / 失败 131」，原因埋在 rawData 里没人看得到。
+func TestRenderErrorBreakdown(t *testing.T) {
+	res := &collect.Result{
+		TotalRequests: 131, SuccessCount: 0, ErrorCount: 131,
+		ErrorKinds: map[string]int{"http_4xx": 130, "timeout": 1},
+		ErrorSamples: map[string]collect.ErrorSample{
+			"http_4xx": {
+				HTTPCode: 401,
+				Detail:   `HTTP 401: {"error":{"message":"Incorrect API key provided: ***","code":"invalid_api_key"}}`,
+				ProbeID:  "onetoken", Protocol: "openai-chat",
+			},
+			"timeout": {Detail: "context deadline exceeded", ProbeID: "needle", Protocol: "openai-chat"},
+		},
+	}
+	var buf strings.Builder
+	renderErrorBreakdown(&buf, res)
+	out := buf.String()
+
+	// 分类计数（按数量降序，多的在前）
+	if !strings.Contains(out, "http_4xx") || !strings.Contains(out, "130") {
+		t.Errorf("应含分类与计数:\n%s", out)
+	}
+	if i, j := strings.Index(out, "http_4xx"), strings.Index(out, "timeout"); i > j {
+		t.Errorf("应按计数降序（http_4xx 130 在 timeout 1 之前）:\n%s", out)
+	}
+	// HTTP 状态码
+	if !strings.Contains(out, "401") {
+		t.Errorf("应含 http_code:\n%s", out)
+	}
+	// 端点原话
+	if !strings.Contains(out, "invalid_api_key") {
+		t.Errorf("应含端点返回的错误原话:\n%s", out)
+	}
+	// 可操作的排查方向：401 应指向密钥
+	if !strings.Contains(out, "api_key_env") {
+		t.Errorf("401 应提示检查密钥配置:\n%s", out)
+	}
+	// timeout 应指向超时配置
+	if !strings.Contains(out, "timeout_sec") {
+		t.Errorf("timeout 应提示检查超时配置:\n%s", out)
+	}
+}
+
+// 全部失败时摘要不能说得像成功：必须显式点出「零成功样本」。
+func TestRenderErrorBreakdownAllFailed(t *testing.T) {
+	res := &collect.Result{
+		TotalRequests: 20, SuccessCount: 0, ErrorCount: 20,
+		ErrorKinds:   map[string]int{"http_4xx": 20},
+		ErrorSamples: map[string]collect.ErrorSample{"http_4xx": {HTTPCode: 403, Detail: "quota exceeded"}},
+	}
+	var buf strings.Builder
+	renderErrorBreakdown(&buf, res)
+	out := buf.String()
+	if !strings.Contains(out, "零成功样本") {
+		t.Errorf("全失败应显式告警零成功样本:\n%s", out)
+	}
+}
+
+// 无失败时不应印任何东西（成功路径保持干净）。
+func TestRenderErrorBreakdownSilentOnSuccess(t *testing.T) {
+	res := &collect.Result{TotalRequests: 20, SuccessCount: 20, ErrorCount: 0}
+	var buf strings.Builder
+	renderErrorBreakdown(&buf, res)
+	if buf.Len() != 0 {
+		t.Errorf("无失败不应有输出: %q", buf.String())
+	}
+}
+
+// 端点原话经摘要渲染前必须剥掉控制字符（防 ANSI 伪造终端显示）。
+func TestRenderErrorBreakdownSanitizes(t *testing.T) {
+	res := &collect.Result{
+		TotalRequests: 1, SuccessCount: 0, ErrorCount: 1,
+		ErrorKinds: map[string]int{"http_4xx": 1},
+		ErrorSamples: map[string]collect.ErrorSample{
+			"http_4xx": {HTTPCode: 400, Detail: "evil\x1b[2J\x1b[H\rFAKE 成功"},
+		},
+	}
+	var buf strings.Builder
+	renderErrorBreakdown(&buf, res)
+	if strings.ContainsAny(buf.String(), "\x1b\r") {
+		t.Errorf("渲染结果残留 ESC/CR: %q", buf.String())
 	}
 }
 

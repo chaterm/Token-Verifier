@@ -100,6 +100,24 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// SanitizeTerminal 剥掉 C0 控制字符（含 ESC）与 DEL，替换为空格。
+// 凡是把被测端点返回的文本写到终端的地方都必须先过这里：端点可以用 ANSI
+// 转义序列伪造终端显示（清屏、改色、用 CR 覆盖已打印的行），换行与制表
+// 则会把一行日志撕成多行、破坏对齐。
+func SanitizeTerminal(s string) string {
+	if !strings.ContainsFunc(s, isCtrl) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isCtrl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+func isCtrl(r rune) bool { return r < 0x20 || r == 0x7f }
+
 func (h *handler) WithGroup(name string) slog.Handler {
 	// CLI 日志不用 group；属性直接带前缀拼平
 	mu := h.mu

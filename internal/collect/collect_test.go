@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/chaterm/token-verifier/internal/compare"
@@ -502,6 +503,186 @@ func TestCollectConnectionFailureHTTPCode(t *testing.T) {
 	}
 	if f.Records[0].HTTPCode == nil || *f.Records[0].HTTPCode != 400 {
 		t.Errorf("http_code = %v, want 400", f.Records[0].HTTPCode)
+	}
+}
+
+// 全 401 端点：采集本身"成功"（收到了 HTTP 响应），但用户必须能当场知道
+// 为什么全失败 —— 而不是等 131 个请求跑完只看到「成功 0 / 失败 131」。
+func TestCollectSurfacesEndpointErrors(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		fmt.Fprint(w, `{"error":{"message":"Incorrect API key provided: sk-e2e","code":"invalid_api_key"}}`)
+	}))
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	st, _ := suite.Load(suitePath, "")
+
+	// info 级别（默认级别）：首次失败就应打印，不必开 debug
+	log, buf := captureLog(slog.LevelInfo)
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	res, err := Run(context.Background(), cfg, st, Options{OutputPath: out, Log: log})
+	if err != nil {
+		t.Fatalf("全 401 不是致命错误: %v", err)
+	}
+
+	// 1. Result 带出错误分布
+	if got := res.ErrorKinds["http_4xx"]; got != res.ErrorCount {
+		t.Errorf("ErrorKinds[http_4xx] = %d, want %d（全部失败都是 4xx）", got, res.ErrorCount)
+	}
+	// 2. Result 带出样本详情（含 http_code 与端点原话）
+	s, ok := res.ErrorSamples["http_4xx"]
+	if !ok {
+		t.Fatalf("ErrorSamples 应含 http_4xx，得到 %+v", res.ErrorSamples)
+	}
+	if s.HTTPCode != 401 {
+		t.Errorf("样本 HTTPCode = %d, want 401", s.HTTPCode)
+	}
+	if !strings.Contains(s.Detail, "invalid_api_key") {
+		t.Errorf("样本 Detail 应含端点原话，得到 %q", s.Detail)
+	}
+	// 3. 密钥不得出现在样本里（落盘与打印同一套脱敏）
+	if strings.Contains(s.Detail, "sk-e2e") {
+		t.Errorf("样本 Detail 泄露密钥明文: %q", s.Detail)
+	}
+
+	// 4. 首次失败在 info 级别就打印了原因
+	logged := buf.String()
+	if !strings.Contains(logged, "invalid_api_key") {
+		t.Errorf("info 级别应打印端点错误原话，实际日志:\n%s", logged)
+	}
+	if !strings.Contains(logged, "http_4xx") {
+		t.Errorf("应打印 error_kind:\n%s", logged)
+	}
+	// 5. 同类错误只打印一次，不刷屏（失败 20+ 条，WARN 行应远少于此）
+	if n := strings.Count(logged, "WARN"); n > 3 {
+		t.Errorf("同类错误应去重打印，WARN 行数 = %d（失败 %d 条）", n, res.ErrorCount)
+	}
+}
+
+// 多种错误分类混合时，每种都应各打印一次首例。
+func TestCollectSurfacesEachErrorKindOnce(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 前几条 500，之后 403：制造两种 error_kind
+		if n.Add(1) <= 4 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"error":{"message":"upstream exploded"}}`)
+			return
+		}
+		w.WriteHeader(403)
+		fmt.Fprint(w, `{"error":{"message":"quota exceeded"}}`)
+	}))
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	st, _ := suite.Load(suitePath, "")
+
+	log, buf := captureLog(slog.LevelInfo)
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	res, err := Run(context.Background(), cfg, st, Options{OutputPath: out, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ErrorKinds["http_5xx"] == 0 || res.ErrorKinds["http_4xx"] == 0 {
+		t.Errorf("应同时统计到 5xx 与 4xx，得到 %+v", res.ErrorKinds)
+	}
+	logged := buf.String()
+	for _, want := range []string{"upstream exploded", "quota exceeded"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("两种错误各应打印一次首例，缺 %q:\n%s", want, logged)
+		}
+	}
+}
+
+// 高并发下错误账本必须自洽：分类计数之和 == 失败总数。
+// 账本在多 goroutine 回调里读写，计数丢失或重复都会让这个等式不成立。
+// （环境无 cgo 时 -race 跑不了，用一致性等式兜底。）
+func TestCollectErrorLedgerConsistentUnderConcurrency(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	var n atomic.Int64
+	// 轮转三种状态码，制造多分类并发写账本
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch n.Add(1) % 3 {
+		case 0:
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+		case 1:
+			w.WriteHeader(429)
+			fmt.Fprint(w, `{"error":{"message":"slow down"}}`)
+		default:
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"error":{"message":"no such model"}}`)
+		}
+	}))
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	cfg.Runtime.MaxConcurrency = 16 // 压并发
+	st, _ := suite.Load(suitePath, "")
+
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	res, err := Run(context.Background(), cfg, st, Options{OutputPath: out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := 0
+	for _, c := range res.ErrorKinds {
+		sum += c
+	}
+	if sum != res.ErrorCount {
+		t.Errorf("账本计数之和 %d != ErrorCount %d（并发下有丢失或重复）:\n  %+v",
+			sum, res.ErrorCount, res.ErrorKinds)
+	}
+	// 每个出现过的分类都应有且仅有一个首例样本
+	if len(res.ErrorSamples) != len(res.ErrorKinds) {
+		t.Errorf("样本数 %d 与分类数 %d 不符: samples=%+v kinds=%+v",
+			len(res.ErrorSamples), len(res.ErrorKinds), res.ErrorSamples, res.ErrorKinds)
+	}
+}
+
+// 端点返回的 error_detail 含 ANSI 转义时，打印到终端前必须已被剥掉。
+func TestCollectSanitizesErrorDetailForTerminal(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		// 恶意端点：用 ESC 清屏 + CR 覆盖已打印内容伪造终端显示
+		fmt.Fprint(w, "{\"error\":{\"message\":\"\x1b[2J\x1b[H\rFAKE: collect 完成\"}}")
+	}))
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	st, _ := suite.Load(suitePath, "")
+
+	log, buf := captureLog(slog.LevelInfo)
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	if _, err := Run(context.Background(), cfg, st, Options{OutputPath: out, Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	logged := buf.String()
+	if strings.ContainsAny(logged, "\x1b\r") {
+		t.Errorf("打印到终端的错误详情残留 ESC/CR: %q", logged)
+	}
+	// 落盘的证据仍应是原始字节（脱敏除外）：终端安全在渲染层解决，不改证据
+	f, err := rawdata.Read(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range f.Records {
+		if r.ErrorDetail != nil && strings.Contains(*r.ErrorDetail, "\x1b") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("落盘的 error_detail 应保留原始控制字符（证据不被渲染层改写）")
 	}
 }
 

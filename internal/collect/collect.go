@@ -18,6 +18,7 @@ import (
 
 	"github.com/chaterm/token-verifier/internal/adapter"
 	"github.com/chaterm/token-verifier/internal/config"
+	"github.com/chaterm/token-verifier/internal/logging"
 	"github.com/chaterm/token-verifier/internal/plan"
 	"github.com/chaterm/token-verifier/internal/rawdata"
 	"github.com/chaterm/token-verifier/internal/suite"
@@ -38,6 +39,21 @@ type Result struct {
 	SuccessCount  int
 	ErrorCount    int
 	SkippedCount  int
+	// ErrorKinds 失败按 error_kind 的计数（connection / timeout / protocol /
+	// parse / http_3xx / http_4xx / http_5xx）。分类本身在 transport 层已经很细，
+	// 但此前只落盘不出口，用户看不到「为什么失败」。
+	ErrorKinds map[string]int
+	// ErrorSamples 每种 error_kind 的首例详情，供 CLI 印出端点原话。
+	// 只留首例：131 个请求可能有 131 条不同 detail，全留会把摘要冲爆。
+	ErrorSamples map[string]ErrorSample
+}
+
+// ErrorSample 一种 error_kind 的首例证据。
+type ErrorSample struct {
+	HTTPCode int    // 0 = 未收到响应（连接失败/超时）
+	Detail   string // 已脱敏的端点原话（未剥控制字符，渲染前须过 SanitizeTerminal）
+	ProbeID  string
+	Protocol string
 }
 
 // Run 执行一次采集。cfg 必须已通过 Validate。
@@ -147,7 +163,10 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 	// 端点可达性：收到过任何 HTTP 响应（含 4xx/5xx）即为可达
 	var gotAnyResponse atomic.Bool
 	var success, failed atomic.Int64
-	var mu sync.Mutex // 保护 writer（回调来自多个 goroutine）
+	var mu sync.Mutex // 保护 writer 与错误账本（回调来自多个 goroutine）
+	// 错误账本：分类计数 + 每类首例。均在 mu 下读写。
+	errorKinds := map[string]int{}
+	errorSamples := map[string]ErrorSample{}
 
 	runner.Run(ctx, tt, func(idx int, attempt int, tr transport.Result) {
 		t := pending[idx]
@@ -189,11 +208,57 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 
 		mu.Lock()
 		defer mu.Unlock()
-		log.Debug("请求完成",
+		// debug 行带上失败原因：此前只有 status=error 而无 error_kind/detail，
+		// 开到最详细也看不出端点到底报了什么。
+		debugArgs := []any{
 			"probe", t.probeID, "question", t.questionID, "bucket", t.bucket,
 			"protocol", t.protocol, "mode", t.transportMode, "repeat", t.repeat,
 			"attempt", attempt, "status", rec.Status,
-			"http_code", tr.HTTPCode, "latency_ms", tr.LatencyMs)
+			"http_code", tr.HTTPCode, "latency_ms", tr.LatencyMs,
+		}
+		if rec.ErrorKind != nil {
+			debugArgs = append(debugArgs, "error_kind", *rec.ErrorKind)
+		}
+		if rec.ErrorDetail != nil {
+			debugArgs = append(debugArgs, "error_detail",
+				logging.SanitizeTerminal(truncateForTerminal(*rec.ErrorDetail)))
+		}
+		log.Debug("请求完成", debugArgs...)
+
+		// 失败即时上报：每种 error_kind 的首例当场打一条 WARN（默认级别可见），
+		// 让用户在第一个请求就能止损，而不是等整轮采集跑完（上百请求、要花钱）
+		// 才从「成功 0 / 失败 131」里猜原因。同类只报一次，避免刷屏。
+		if rec.ErrorKind != nil {
+			kind := *rec.ErrorKind
+			errorKinds[kind]++
+			if _, seen := errorSamples[kind]; !seen {
+				detail := ""
+				if rec.ErrorDetail != nil {
+					detail = *rec.ErrorDetail
+				}
+				code := 0
+				if rec.HTTPCode != nil {
+					code = *rec.HTTPCode
+				}
+				errorSamples[kind] = ErrorSample{
+					HTTPCode: code, Detail: detail,
+					ProbeID: t.probeID, Protocol: t.protocol,
+				}
+				warnArgs := []any{"error_kind", kind}
+				if code != 0 {
+					warnArgs = append(warnArgs, "http_code", code)
+				}
+				warnArgs = append(warnArgs, "probe", t.probeID, "protocol", t.protocol)
+				if detail != "" {
+					// 端点返回的文本：剥控制字符后才可写终端（防 ANSI 伪造显示）
+					warnArgs = append(warnArgs, "detail",
+						logging.SanitizeTerminal(truncateForTerminal(detail)))
+				}
+				warnArgs = append(warnArgs, "note", "同类错误后续不再逐条打印")
+				log.Warn("请求失败", warnArgs...)
+			}
+		}
+
 		err := w.WriteRecord(rec)
 		if err == nil {
 			err = w.Flush()
@@ -213,6 +278,9 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 
 	res.SuccessCount = int(success.Load())
 	res.ErrorCount = int(failed.Load())
+	mu.Lock()
+	res.ErrorKinds, res.ErrorSamples = errorKinds, errorSamples
+	mu.Unlock()
 
 	// 6. 采集致命错误边界：一个成功样本都没有且从未收到任何 HTTP 响应
 	// = 端点完全不可达。个别请求失败、全 4xx/5xx 都不算 —— 那些是数据本身。
@@ -515,4 +583,17 @@ func dryRunSummary(cp *plan.CollectionPlan, tasks []task) *Result {
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// terminalDetailMaxRunes 单条日志里错误详情的展示上限。落盘的上限是 4KiB
+// （transport.capDetail），那个长度塞进一行日志会把终端冲掉。
+const terminalDetailMaxRunes = 200
+
+// truncateForTerminal 按 rune 截断到 terminalDetailMaxRunes，不切碎多字节字符。
+func truncateForTerminal(s string) string {
+	rs := []rune(s)
+	if len(rs) <= terminalDetailMaxRunes {
+		return s
+	}
+	return string(rs[:terminalDetailMaxRunes]) + "…"
 }

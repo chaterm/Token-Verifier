@@ -8,6 +8,23 @@
 
 ### Added
 
+- 采集期端点错误即时可见：每种 `error_kind` 的首例在发生时就打一条 `WARN`
+  （默认级别，无需 `--log-level debug`），带 `http_code`、探针、协议与端点
+  返回的原话，同类不再逐条刷屏。此前错误只落进 rawData，终端上一轮采集
+  只看到「成功 0 / 失败 131」，密钥写错也要等上百个请求（联网、花钱）跑完
+  才可能发现。采集结束追加按分类的失败分布与**排查方向**（401/403 → 检查
+  `target.api_key_env`；404 → 检查 `base_url` 与 `path` 拼接；429 → 调
+  `runtime.min_interval_ms`；`timeout` → 调 `runtime.timeout_sec`；等），
+  零成功样本时显式告警该 rawData 不含可比较数据。`collect` 印到 stdout，
+  `run` 印到 stderr（stdout 留给比较报告）。`--log-level debug` 的逐请求行
+  补上了 `error_kind` / `error_detail` —— 此前只有 `status=error` 而无原因
+- `logging.SanitizeTerminal`：写终端前剥 C0 控制字符（含 ESC）与 DEL。
+  端点返回的文本可含 ANSI 转义序列（清屏、改色、CR 覆盖已打印行）伪造终端
+  显示，凡把端点文本写终端处一律先过它；落盘的 `error_detail` 仍保留原始
+  字节（证据不被渲染层改写）。`report` 包原有的同名私有实现改为复用它
+
+### Added
+
 - GitHub Actions CI：gofmt / go vet / go test 三平台矩阵 + golangci-lint
 - goreleaser 发布配置：多平台二进制内置示例配置与题库，`v*` tag 自动出 draft release
 - `Publish Baseline` workflow：题库 + 官方 rawData 成对发布（强制 digest 级门禁）。

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/chaterm/token-verifier/internal/compare"
+	"github.com/chaterm/token-verifier/internal/logging"
 	"github.com/chaterm/token-verifier/internal/probe"
 	"github.com/chaterm/token-verifier/internal/stats"
 )
@@ -218,19 +219,7 @@ func renderDist(w io.Writer, a, b map[string]int) {
 
 // sanitizeTerminal 剥掉 C0 控制字符（含 ESC）与 DEL，替换为空格：
 // 分布取值出现在对齐表格里，换行/制表同样会撕碎布局，一并替换。
-func sanitizeTerminal(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool {
-		return r < 0x20 || r == 0x7f
-	}) {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
-}
+func sanitizeTerminal(s string) string { return logging.SanitizeTerminal(s) }
 
 // renderHist 连续量联合直方图：每 bin 一行，区间 + 两侧条形。
 // 两侧都为 0 的 bin 跳过（稀疏样本下大片空 bin 是噪声）；
