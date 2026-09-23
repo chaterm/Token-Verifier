@@ -599,6 +599,85 @@ func TestCollectSurfacesEachErrorKindOnce(t *testing.T) {
 	}
 }
 
+// Options.Progress 按任务粒度报告进度：done 单调不减、永不超过 total，
+// 结束时 done == total。续跑（全部已完成）时不应再报告。
+func TestCollectProgressCallback(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	srv := httptest.NewServer(fakeOpenAI{mode: "same"})
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	cfg.Probes["tokenizer"] = config.ProbeConfig{} // 只留 onetoken，2 题 × 10 repeats
+	st, _ := suite.Load(suitePath, "")
+
+	var mu sync.Mutex
+	type sample struct{ done, total int }
+	var calls []sample
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	res, err := Run(context.Background(), cfg, st, Options{
+		OutputPath: out,
+		Progress: func(done, total int) {
+			mu.Lock()
+			calls = append(calls, sample{done, total})
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != res.TotalRequests {
+		t.Errorf("进度回调应每任务一次（%d 次），得到 %d", res.TotalRequests, len(calls))
+	}
+	mu.Lock()
+	prev := 0
+	for i, c := range calls {
+		if c.total != res.TotalRequests {
+			t.Errorf("第 %d 次回调 total=%d, want %d", i, c.total, res.TotalRequests)
+		}
+		if c.done < prev {
+			t.Errorf("done 应单调不减: 第 %d 次 %d < %d", i, c.done, prev)
+		}
+		if c.done > c.total {
+			t.Errorf("done %d 不应超过 total %d", c.done, c.total)
+		}
+		prev = c.done
+	}
+	if len(calls) > 0 && calls[len(calls)-1].done != res.TotalRequests {
+		t.Errorf("最后一次 done=%d, want %d", calls[len(calls)-1].done, res.TotalRequests)
+	}
+	mu.Unlock()
+
+	// 续跑（全部已完成）：无待做任务，不应有进度回调
+	res2, err := Run(context.Background(), cfg, st, Options{
+		OutputPath: out,
+		Progress: func(done, total int) {
+			t.Errorf("续跑无新任务，不应触发进度回调: done=%d total=%d", done, total)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.TotalRequests != 0 {
+		t.Fatalf("续跑应无新请求，得到 %d", res2.TotalRequests)
+	}
+}
+
+// Progress 为 nil 时（默认）采集行为不变。
+func TestCollectProgressNilByDefault(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+	srv := httptest.NewServer(fakeOpenAI{mode: "same"})
+	defer srv.Close()
+	cfg := testConfig(t, srv.URL, suitePath)
+	st, _ := suite.Load(suitePath, "")
+	out := filepath.Join(t.TempDir(), "out.rawdata.jsonl.gz")
+	if _, err := Run(context.Background(), cfg, st, Options{OutputPath: out}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 高并发下错误账本必须自洽：分类计数之和 == 失败总数。
 // 账本在多 goroutine 回调里读写，计数丢失或重复都会让这个等式不成立。
 // （环境无 cgo 时 -race 跑不了，用一致性等式兜底。）

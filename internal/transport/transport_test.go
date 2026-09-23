@@ -371,3 +371,59 @@ func TestDoHugeProtocolErrorCapped(t *testing.T) {
 		t.Errorf("ErrorDetail len = %d, want ≤ 4096", got)
 	}
 }
+
+// OnTaskDone 每个任务恰好触发一次，无论成功/重试/放弃 —— 进度条按任务计数，
+// 不按尝试计数（重试不应让进度原地踏步或超过 100%）。
+func TestRunnerOnTaskDoneOncePerTask(t *testing.T) {
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 一半任务成功，一半返回 500 触发重试
+		if n.Add(1)%2 == 0 {
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+	}))
+	defer srv.Close()
+
+	c := New(Options{MaxConcurrency: 4, TimeoutSec: 5, MaxAttempts: 2})
+	r := NewRunner(c)
+	var mu sync.Mutex
+	doneIdx := map[int]int{}
+	attempts := map[int]int{}
+	r.OnTaskDone = func(idx int) {
+		mu.Lock()
+		doneIdx[idx]++
+		mu.Unlock()
+	}
+
+	tasks := make([]Task, 8)
+	for i := range tasks {
+		tasks[i] = Task{Adapter: fakeAdapter{}, BaseURL: srv.URL, TransportMode: "non_stream", Logical: adapter.LogicalRequest{}}
+	}
+	r.Run(context.Background(), tasks, func(idx, attempt int, _ Result) {
+		mu.Lock()
+		attempts[idx]++
+		mu.Unlock()
+	})
+
+	if len(doneIdx) != len(tasks) {
+		t.Errorf("OnTaskDone 应覆盖全部 %d 个任务，得到 %d", len(tasks), len(doneIdx))
+	}
+	for idx, c := range doneIdx {
+		if c != 1 {
+			t.Errorf("任务 %d 的 OnTaskDone 触发 %d 次（重试不应重复计）", idx, c)
+		}
+	}
+	// 对照：失败的那些任务 attempts 应为 2（重试过），而 onTaskDone 仍只一次
+	var retried int
+	for _, a := range attempts {
+		if a > 1 {
+			retried++
+		}
+	}
+	if retried == 0 {
+		t.Error("应至少有一个任务发生重试（否则没测到重试场景）")
+	}
+}

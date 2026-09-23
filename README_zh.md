@@ -271,6 +271,8 @@ tv run -c token-verifier.yaml \
 
 所有子命令都接受 `--log-level debug|info|warn|error`（默认 `info`）：`debug` 会逐请求打印采集明细（探针、题目、协议、状态、耗时），排查端点问题时很有用；日志一律走 stderr，不污染 stdout 的报告。
 
+`collect` 与 `run` 接受 `--progress`：采集期间在 stderr 画一条单行进度条（显式开启，默认关闭，CI 输出保持逐行日志）。进度条用 `\r` 原地重绘、不含 ANSI 转义序列；日志行写出前会先擦掉条形，两者不会叠在一起。失败请求在采集期间同样即时可见（默认级别）：每种 `error_kind` 的首例打一条 `WARN` 并附端点返回的原话（密钥已脱敏），采集结束时再按分类印失败分布与排查方向。
+
 `compare` 与 `run` 还接受 `-v` / `--verbose`：在判定表之后追加一段证据明细，逐 cell 渲染两侧的 ASCII 直方图对比（onetoken 答案取值分布、toolcall 工具选择分布、think-effort 思考量分布、tokenizer 两侧观测 token 数明细、needle 逐 cell 召回率），以及 latency/ttft/tps 在共享分箱边界上的分布对比。判定本身不变 —— verbose 只回答「凭什么」。`--json` 报告无论是否带 `-v` 都携带底层数据（逐 cell 的 `a_dist`/`b_dist`、连续量探针的 `hist`、顶层 `transport_histograms`），下游可以据此重绘任意图表。
 
 `run` 严格等于 `collect` 后接 `compare` —— 同一条代码路径，不是第二份实现。**CLI 只接受至多一个活端点。** 要对比两个活端点，跑两次 `collect` 再 `compare`。正是这一点让「发布官方基线」和「自建基线」成为完全相同的操作。

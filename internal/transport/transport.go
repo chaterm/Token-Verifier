@@ -236,6 +236,10 @@ func (c *Client) parseStream(t Task, resp *http.Response, start time.Time) Resul
 // 调用方据此写多条 record（attempt 递增，不覆盖 —— 重试不能把错误率洗白）。
 type Runner struct {
 	client *Client
+	// OnTaskDone 一个任务的全部尝试结束后触发恰好一次（成功、放弃、重试到上限
+	// 都算）。进度类消费者按任务计数而不是按尝试计数，否则会原地踏步或超过 100%。
+	// 可能从多个 goroutine 并发调用。
+	OnTaskDone func(idx int)
 }
 
 func NewRunner(c *Client) *Runner { return &Runner{client: c} }
@@ -249,6 +253,10 @@ func (r *Runner) Run(ctx context.Context, tasks []Task, onAttempt func(idx int, 
 		wg.Add(1)
 		go func(idx int, t Task) {
 			defer wg.Done()
+			// 任务粒度进度：无论成败，全部尝试结束后上报一次
+			if r.OnTaskDone != nil {
+				defer r.OnTaskDone(idx)
+			}
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			for attempt := 0; attempt < r.client.opts.MaxAttempts; attempt++ {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -31,12 +32,17 @@ func (t thresholdFlags) Set(s string) error {
 // setupLogger 解析 --log-level 并构造写到 stderr 的 logger（三个子命令共用）。
 // 级别非法时报错并返回 exitUsage。
 func setupLogger(levelName string) (*slog.Logger, int) {
+	return setupLoggerTo(os.Stderr, levelName)
+}
+
+// setupLoggerTo 同 setupLogger，但可指定输出 writer（进度条开启时包一层擦除）。
+func setupLoggerTo(w io.Writer, levelName string) (*slog.Logger, int) {
 	level, err := logging.ParseLevel(levelName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return nil, exitUsage
 	}
-	return logging.Setup(os.Stderr, level), 0
+	return logging.Setup(w, level), 0
 }
 
 // cmdCompare 实现 compare 子命令，返回退出码。

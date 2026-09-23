@@ -29,11 +29,12 @@ func cmdCollect(args []string) int {
 	fs := flag.NewFlagSet("collect", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var configPath, outputPath, logLevel string
-	var dryRun bool
+	var dryRun, progress bool
 	fs.StringVar(&configPath, "config", "", "配置文件路径（必填）")
 	fs.StringVar(&configPath, "c", "", "配置文件路径（简写）")
 	fs.StringVar(&outputPath, "o", "", "输出 rawData 路径（必填，如 out.rawdata.jsonl.gz）")
 	fs.BoolVar(&dryRun, "dry-run", false, "只印请求数与 token 估算，不发请求")
+	fs.BoolVar(&progress, "progress", false, "在 stderr 画采集进度条（显式开启；默认关闭，CI 输出保持逐行日志）")
 	fs.StringVar(&logLevel, "log-level", "info", "日志级别 debug|info|warn|error")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "用法: tv collect [flags]\n\nflags:\n")
@@ -46,7 +47,15 @@ func cmdCollect(args []string) int {
 		fs.Usage()
 		return exitUsage
 	}
-	log, code := setupLogger(logLevel)
+
+	// 进度条开启时，日志经 bar 包装的 writer 写出（写日志前先擦掉条形）
+	var bar *progressBar
+	logWriter := io.Writer(os.Stderr)
+	if progress && !dryRun {
+		bar = newProgressBar(os.Stderr, 0)
+		logWriter = bar.wrapForLog(logWriter)
+	}
+	log, code := setupLoggerTo(logWriter, logLevel)
 	if code != 0 {
 		return code
 	}
@@ -56,11 +65,18 @@ func cmdCollect(args []string) int {
 		return code
 	}
 
-	res, err := collect.Run(context.Background(), cfg, st, collect.Options{
-		OutputPath: outputPath,
-		DryRun:     dryRun,
-		Log:        log,
-	})
+	opts := collect.Options{OutputPath: outputPath, DryRun: dryRun, Log: log}
+	if bar != nil {
+		opts.Progress = func(done, total int) {
+			bar.setTotal(total)
+			bar.update(done)
+			bar.draw()
+		}
+	}
+	res, err := collect.Run(context.Background(), cfg, st, opts)
+	if bar != nil {
+		bar.finish()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitCollect
@@ -151,7 +167,7 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var configPath, jsonPath, junitPath, logLevel string
-	var keep, verbose, allowSubset bool
+	var keep, verbose, allowSubset, progress bool
 	thresholds := thresholdFlags{}
 	fs.StringVar(&configPath, "config", "", "配置文件路径（必填，读 thresholds 段）")
 	fs.StringVar(&configPath, "c", "", "配置文件路径（简写）")
@@ -163,6 +179,7 @@ func cmdRun(args []string) int {
 	fs.BoolVar(&verbose, "verbose", false, "追加证据明细：逐 cell 分布直方图与传输分布对比")
 	fs.BoolVar(&verbose, "v", false, "同 --verbose（简写）")
 	fs.BoolVar(&keep, "keep-rawdata", false, "保留临时 rawData（默认采集完即删）")
+	fs.BoolVar(&progress, "progress", false, "在 stderr 画采集进度条（显式开启；默认关闭，CI 输出保持逐行日志）")
 	fs.StringVar(&logLevel, "log-level", "info", "日志级别 debug|info|warn|error")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "用法: tv run [flags] <baseline.rawdata.jsonl.gz>\n\nflags:\n")
@@ -175,7 +192,14 @@ func cmdRun(args []string) int {
 		fs.Usage()
 		return exitUsage
 	}
-	log, code := setupLogger(logLevel)
+	// 进度条开启时，日志经 bar 包装的 writer 写出（写日志前先擦掉条形）
+	var bar *progressBar
+	logWriter := io.Writer(os.Stderr)
+	if progress {
+		bar = newProgressBar(os.Stderr, 0)
+		logWriter = bar.wrapForLog(logWriter)
+	}
+	log, code := setupLoggerTo(logWriter, logLevel)
 	if code != 0 {
 		return code
 	}
@@ -231,7 +255,18 @@ func cmdRun(args []string) int {
 		}
 	}()
 
-	collectRes, err := collect.Run(context.Background(), cfg, st, collect.Options{OutputPath: tmpPath, Log: log})
+	collectOpts := collect.Options{OutputPath: tmpPath, Log: log}
+	if bar != nil {
+		collectOpts.Progress = func(done, total int) {
+			bar.setTotal(total)
+			bar.update(done)
+			bar.draw()
+		}
+	}
+	collectRes, err := collect.Run(context.Background(), cfg, st, collectOpts)
+	if bar != nil {
+		bar.finish()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR  %v\n", err)
 		return exitCollect

@@ -31,6 +31,10 @@ type Options struct {
 	DryRun     bool   // 只印请求数与 token 估算
 	// Log 进度日志；nil = 静默（库式调用不打日志）
 	Log *slog.Logger
+	// Progress 每个任务（不是每次尝试）完成后回调，done 单调递增、终值等于
+	// total（= 本次待发的请求数，不含续跑已完成的部分）。nil = 无进度输出。
+	// 回调可能从多个 goroutine 并发触发，实现方需自行同步。
+	Progress func(done, total int)
 }
 
 // Result 采集结果摘要。
@@ -146,6 +150,14 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 		BackoffMaxMs:   cfg.Runtime.BackoffMaxMs,
 	})
 	runner := transport.NewRunner(client)
+	if opts.Progress != nil {
+		// 任务粒度进度：done 单调递增，重试不重复计（OnTaskDone 每任务恰好一次）
+		var done atomic.Int64
+		total := len(pending)
+		runner.OnTaskDone = func(int) {
+			opts.Progress(int(done.Add(1)), total)
+		}
+	}
 
 	tt := make([]transport.Task, len(pending))
 	for i, t := range pending {

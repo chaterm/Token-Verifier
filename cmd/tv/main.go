@@ -80,6 +80,8 @@ collect 的 flags:
   -c, --config <file>        配置文件（必填）
   -o <file>                  输出 rawData 路径（必填）
   --dry-run                  只印请求数与 token 估算，不发请求
+  --progress                 在 stderr 画采集进度条（显式开启；默认关闭，
+                             CI 输出保持逐行日志）
   --log-level <level>        日志级别 debug|info|warn|error（默认 info）
 
 run 的 flags:
@@ -89,6 +91,7 @@ run 的 flags:
   -v, --verbose              同 compare
   --json / --junit <file>    同 compare
   --keep-rawdata             保留临时 rawData（默认采集完即删）
+  --progress                 在 stderr 画采集进度条（显式开启；默认关闭）
   --log-level <level>        日志级别 debug|info|warn|error（默认 info）
 
 退出码:
