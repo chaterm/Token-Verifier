@@ -155,34 +155,34 @@ func (c *Client) Do(ctx context.Context, t Task) Result {
 		return Result{ErrorKind: kind, ErrorMsg: redact(err.Error(), t.RedactSecret), LatencyMs: msSince(start)}
 	}
 
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			body := readSnippet(resp.Body)
-			_ = resp.Body.Close()
-			kind := "http_4xx"
-			switch {
-			case resp.StatusCode >= 500:
-				kind = "http_5xx"
-			case resp.StatusCode >= 300 && resp.StatusCode < 400:
-				// CheckRedirect 已拒绝跟随：重定向本身是证据（端点接线异常或
-				// 恶意转发），单独归类，不参与重试。
-				kind = "http_3xx"
-			}
-			var retryAfter time.Duration
-			if resp.StatusCode == http.StatusTooManyRequests {
-				capDur := 60 * time.Second
-				if c.opts.BackoffMaxMs > 0 {
-					capDur = time.Duration(c.opts.BackoffMaxMs) * time.Millisecond
-				}
-				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now(), capDur)
-			}
-			return Result{
-				HTTPCode:   resp.StatusCode,
-				ErrorKind:  kind,
-				ErrorMsg:   redact(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body), t.RedactSecret),
-				LatencyMs:  msSince(start),
-				RetryAfter: retryAfter,
-			}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body := readSnippet(resp.Body)
+		_ = resp.Body.Close()
+		kind := "http_4xx"
+		switch {
+		case resp.StatusCode >= 500:
+			kind = "http_5xx"
+		case resp.StatusCode >= 300 && resp.StatusCode < 400:
+			// CheckRedirect 已拒绝跟随：重定向本身是证据（端点接线异常或
+			// 恶意转发），单独归类，不参与重试。
+			kind = "http_3xx"
 		}
+		var retryAfter time.Duration
+		if resp.StatusCode == http.StatusTooManyRequests {
+			capDur := 60 * time.Second
+			if c.opts.BackoffMaxMs > 0 {
+				capDur = time.Duration(c.opts.BackoffMaxMs) * time.Millisecond
+			}
+			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now(), capDur)
+		}
+		return Result{
+			HTTPCode:   resp.StatusCode,
+			ErrorKind:  kind,
+			ErrorMsg:   redact(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body), t.RedactSecret),
+			LatencyMs:  msSince(start),
+			RetryAfter: retryAfter,
+		}
+	}
 
 	// 成功路径：按流式与否解析并计时
 	if t.TransportMode == "stream" {

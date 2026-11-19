@@ -25,21 +25,21 @@ import (
 // —— 核心配置与题库类型导出 ——
 
 type (
-	ConfigFile         = config.File
-	TargetConfig       = config.Target
-	ProtocolConfig     = config.ProtocolConfig
-	Capabilities       = config.Capabilities
-	TransportMix       = config.TransportMix
-	ThinkingBlock      = config.ThinkingBlock
-	ThinkingMode       = config.ThinkingMode
-	RequestConfig      = config.RequestConfig
-	SuiteRef           = config.SuiteRef
-	ProbeConfig        = config.ProbeConfig
-	RuntimeConfig      = config.Runtime
-	PaddingConfig      = config.Padding
-	SuiteItemInfo      = config.SuiteItemInfo
-	ProbeThresholds    = config.ProbeThresholds
-	ResolvedThreshold  = config.ResolvedThreshold
+	ConfigFile          = config.File
+	TargetConfig        = config.Target
+	ProtocolConfig      = config.ProtocolConfig
+	Capabilities        = config.Capabilities
+	TransportMix        = config.TransportMix
+	ThinkingBlock       = config.ThinkingBlock
+	ThinkingMode        = config.ThinkingMode
+	RequestConfig       = config.RequestConfig
+	SuiteRef            = config.SuiteRef
+	ProbeConfig         = config.ProbeConfig
+	RuntimeConfig       = config.Runtime
+	PaddingConfig       = config.Padding
+	SuiteItemInfo       = config.SuiteItemInfo
+	ProbeThresholds     = config.ProbeThresholds
+	ResolvedThreshold   = config.ResolvedThreshold
 	MissingThresholdErr = config.MissingThresholdError
 
 	SuiteFile      = suite.File
@@ -53,41 +53,41 @@ type (
 	CollectionPlan = plan.CollectionPlan
 	ProbePlan      = plan.ProbePlan
 
-	RawDataFile          = rawdata.File
-	RawManifest          = rawdata.Manifest
-	RawEndpoint          = rawdata.Endpoint
-	RawSkip              = rawdata.Skip
-	RawUsage             = rawdata.Usage
-	RawRecord            = rawdata.Record
-	RawCellAggregate     = rawdata.CellAggregate
-	RawTransportMetrics  = rawdata.TransportMetrics
-	RawAggregates        = rawdata.Aggregates
-	RawTransport         = rawdata.Transport
-	RawCollectionPlan    = rawdata.CollectionPlan
-	RawProbePlan         = rawdata.ProbePlan
+	RawDataFile         = rawdata.File
+	RawManifest         = rawdata.Manifest
+	RawEndpoint         = rawdata.Endpoint
+	RawSkip             = rawdata.Skip
+	RawUsage            = rawdata.Usage
+	RawRecord           = rawdata.Record
+	RawCellAggregate    = rawdata.CellAggregate
+	RawTransportMetrics = rawdata.TransportMetrics
+	RawAggregates       = rawdata.Aggregates
+	RawTransport        = rawdata.Transport
+	RawCollectionPlan   = rawdata.CollectionPlan
+	RawProbePlan        = rawdata.ProbePlan
 
-	Probe             = probe.Probe
-	ProbeMeta         = probe.ProbeMeta
-	StatKind          = probe.StatKind
-	CellPair          = probe.CellPair
-	Observation       = probe.Observation
-	Verdict           = probe.Verdict
-	BucketVerdict     = probe.BucketVerdict
-	CellDetail        = probe.CellDetail
+	Probe         = probe.Probe
+	ProbeMeta     = probe.ProbeMeta
+	StatKind      = probe.StatKind
+	CellPair      = probe.CellPair
+	Observation   = probe.Observation
+	Verdict       = probe.Verdict
+	BucketVerdict = probe.BucketVerdict
+	CellDetail    = probe.CellDetail
 
-	CompareResult     = compare.Result
-	CompareOptions    = compare.Options
-	CompareScope      = compare.Scope
-	ScopeExclusion    = compare.ScopeExclusion
-	GateReconciled    = compare.Reconciled
-	GateError         = compare.GateError
-	Percentiles       = compare.Percentiles
-	TransportHists    = compare.TransportHists
+	CompareResult           = compare.Result
+	CompareOptions          = compare.Options
+	CompareScope            = compare.Scope
+	ScopeExclusion          = compare.ScopeExclusion
+	GateReconciled          = compare.Reconciled
+	GateError               = compare.GateError
+	Percentiles             = compare.Percentiles
+	TransportHists          = compare.TransportHists
 	CompareTransportMetrics = compare.TransportMetrics
 
-	CollectOptions    = collect.Options
-	CollectResult     = collect.Result
-	CollectErrSample  = collect.ErrorSample
+	CollectOptions   = collect.Options
+	CollectResult    = collect.Result
+	CollectErrSample = collect.ErrorSample
 
 	ConcurrencyEvent    = transport.ConcurrencyEvent
 	ConcurrencySnapshot = transport.ConcurrencySnapshot
@@ -254,21 +254,21 @@ func Collect(ctx context.Context, cfg *ConfigFile, st *SuiteFile, opts CollectOp
 
 // EndpointProbeItem 单协议单传输模式的探活结果。
 type EndpointProbeItem struct {
-	Protocol         string `json:"protocol"`
-	TransportMode    string `json:"transport_mode"`
-	Success          bool   `json:"success"`
-	HTTPCode         int    `json:"http_code"`
-	ErrorKind        string `json:"error_kind,omitempty"`
-	ErrorMessage     string `json:"error_message,omitempty"`
-	LatencyMs        int    `json:"latency_ms"`
-	TtftMs           *int   `json:"ttft_ms,omitempty"`
+	Protocol         string   `json:"protocol"`
+	TransportMode    string   `json:"transport_mode"`
+	Success          bool     `json:"success"`
+	HTTPCode         int      `json:"http_code"`
+	ErrorKind        string   `json:"error_kind,omitempty"`
+	ErrorMessage     string   `json:"error_message,omitempty"`
+	LatencyMs        int      `json:"latency_ms"`
+	TtftMs           *int     `json:"ttft_ms,omitempty"`
 	Tps              *float64 `json:"tps,omitempty"`
-	ContentPreview   string `json:"content_preview,omitempty"`
-	ReasoningPreview string `json:"reasoning_preview,omitempty"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	ReasoningTokens  int    `json:"reasoning_tokens"`
-	CachedTokens     int    `json:"cached_tokens"`
+	ContentPreview   string   `json:"content_preview,omitempty"`
+	ReasoningPreview string   `json:"reasoning_preview,omitempty"`
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	ReasoningTokens  int      `json:"reasoning_tokens"`
+	CachedTokens     int      `json:"cached_tokens"`
 }
 
 // ProbeEndpoint 复用 TV 原生协议适配器与传输层对 Target 配置执行最小连通性与能力探活。
