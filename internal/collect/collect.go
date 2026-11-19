@@ -25,24 +25,36 @@ import (
 	"github.com/chaterm/token-verifier/internal/transport"
 )
 
-// Options 采集选项（命令行层填）。
+// Options 采集选项（命令行层或 SDK 调用方填写）。
 type Options struct {
 	OutputPath string // rawData 输出路径
-	DryRun     bool   // 只印请求数与 token 估算
+	DryRun     bool   // 只计算请求数与 token 估算，不联网落盘
+	// DryRunOut dry-run 摘要文本输出流；nil 时默认写 os.Stdout（兼容 CLI），SDK 可传 io.Discard。
+	DryRunOut io.Writer
+	// APIKey 可选内存直传密钥；非空时优先于 os.Getenv(cfg.Target.APIKeyEnv)，
+	// 供嵌入式多任务并发调用实现密钥隔离，避免读写进程全局环境变量。
+	APIKey string
 	// Log 进度日志；nil = 静默（库式调用不打日志）
 	Log *slog.Logger
 	// Progress 每个任务（不是每次尝试）完成后回调，done 单调递增、终值等于
 	// total（= 本次待发的请求数，不含续跑已完成的部分）。nil = 无进度输出。
 	// 回调可能从多个 goroutine 并发触发，实现方需自行同步。
 	Progress func(done, total int)
+	// OnConcurrency AIMD 并发窗口变化或限流退避回调（可选，并发触发）。
+	OnConcurrency func(ev transport.ConcurrencyEvent)
 }
 
 // Result 采集结果摘要。
 type Result struct {
-	TotalRequests int
-	SuccessCount  int
-	ErrorCount    int
-	SkippedCount  int
+	TotalRequests    int
+	SuccessCount     int
+	ErrorCount       int
+	SkippedCount     int
+	EstimatedTokens  int
+	ProbeRequests    map[string]int
+	PeakConcurrency  int
+	FinalConcurrency int
+	ThrottleEvents   int
 	// ErrorKinds 失败按 error_kind 的计数（connection / timeout / protocol /
 	// parse / http_3xx / http_4xx / http_5xx）。分类本身在 transport 层已经很细，
 	// 但此前只落盘不出口，用户看不到「为什么失败」。
@@ -89,11 +101,20 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 	r.Shuffle(len(tasks), func(i, j int) { tasks[i], tasks[j] = tasks[j], tasks[i] })
 
 	if opts.DryRun {
-		return dryRunSummary(cp, tasks), nil
+		out := opts.DryRunOut
+		if out == nil {
+			out = os.Stdout
+		}
+		return dryRunSummary(out, cp, tasks), nil
+	}
+
+	apiKey := opts.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv(cfg.Target.APIKeyEnv)
 	}
 
 	// 4. manifest + 续跑读回（文件即自身续跑状态）
-	manifest, err := buildManifest(cfg, cp, canonical, digest, skips, sampling)
+	manifest, err := buildManifest(cfg, apiKey, cp, canonical, digest, skips, sampling)
 	if err != nil {
 		return nil, err
 	}
@@ -140,16 +161,18 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 	// 这里只保证异常退出时文件句柄不泄漏
 	defer func() { _ = closeWriter() }()
 
-	apiKey := os.Getenv(cfg.Target.APIKeyEnv)
 	client := transport.New(transport.Options{
-		MaxConcurrency: cfg.Runtime.MaxConcurrency,
-		TimeoutSec:     cfg.Runtime.TimeoutSec,
-		MinIntervalMs:  cfg.Runtime.MinIntervalMs,
-		MaxAttempts:    cfg.Runtime.MaxAttempts,
-		BackoffBaseMs:  cfg.Runtime.BackoffBaseMs,
-		BackoffMaxMs:   cfg.Runtime.BackoffMaxMs,
+		MaxConcurrency:     cfg.Runtime.MaxConcurrency,
+		AutoConcurrency:    cfg.Runtime.AutoConcurrencyEnabled(),
+		InitialConcurrency: cfg.Runtime.InitialConcurrency,
+		TimeoutSec:         cfg.Runtime.TimeoutSec,
+		MinIntervalMs:      cfg.Runtime.MinIntervalMs,
+		MaxAttempts:        cfg.Runtime.MaxAttempts,
+		BackoffBaseMs:      cfg.Runtime.BackoffBaseMs,
+		BackoffMaxMs:       cfg.Runtime.BackoffMaxMs,
 	})
 	runner := transport.NewRunner(client)
+	runner.OnConcurrency = opts.OnConcurrency
 	if opts.Progress != nil {
 		// 任务粒度进度：done 单调递增，重试不重复计（OnTaskDone 每任务恰好一次）
 		var done atomic.Int64
@@ -290,6 +313,10 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 
 	res.SuccessCount = int(success.Load())
 	res.ErrorCount = int(failed.Load())
+	snap := runner.Concurrency()
+	res.PeakConcurrency = snap.PeakCwnd
+	res.FinalConcurrency = snap.CurrentCwnd
+	res.ThrottleEvents = snap.ThrottleEvents
 	mu.Lock()
 	res.ErrorKinds, res.ErrorSamples = errorKinds, errorSamples
 	mu.Unlock()
@@ -513,8 +540,7 @@ func protocolByID(cfg *config.File, id string) config.ProtocolConfig {
 }
 
 // buildManifest 组装 manifest：endpoint 只放密钥与主机名的指纹，明文均不落盘。
-func buildManifest(cfg *config.File, cp *plan.CollectionPlan, canonical []byte, digest string, skips []rawdata.Skip, sampling map[string]map[string]int) (rawdata.Manifest, error) {
-	apiKey := os.Getenv(cfg.Target.APIKeyEnv)
+func buildManifest(cfg *config.File, apiKey string, cp *plan.CollectionPlan, canonical []byte, digest string, skips []rawdata.Skip, sampling map[string]map[string]int) (rawdata.Manifest, error) {
 	sum := sha256.Sum256([]byte(apiKey))
 	fingerprint := hex.EncodeToString(sum[:])[:8]
 
@@ -568,8 +594,11 @@ func buildManifest(cfg *config.File, cp *plan.CollectionPlan, canonical []byte, 
 }
 
 // dryRunSummary 印请求数与 token 估算（不落盘不联网）。
-func dryRunSummary(cp *plan.CollectionPlan, tasks []task) *Result {
-	res := &Result{TotalRequests: len(tasks)}
+func dryRunSummary(w io.Writer, cp *plan.CollectionPlan, tasks []task) *Result {
+	res := &Result{
+		TotalRequests: len(tasks),
+		ProbeRequests: make(map[string]int, len(cp.Probes)),
+	}
 	var estPromptTokens int
 	for _, t := range tasks {
 		// 粗估：prompt 字符数 / 3（中英混合近似）；max_tokens 为输出上限
@@ -578,7 +607,8 @@ func dryRunSummary(cp *plan.CollectionPlan, tasks []task) *Result {
 			estPromptTokens += *t.logical.MaxTokens
 		}
 	}
-	fmt.Printf("dry-run: %d 个请求，token 估算 ≈ %d（输入按字符/3 估，输出按 max_tokens 上限估）\n",
+	res.EstimatedTokens = estPromptTokens
+	fmt.Fprintf(w, "dry-run: %d 个请求，token 估算 ≈ %d（输入按字符/3 估，输出按 max_tokens 上限估）\n",
 		res.TotalRequests, estPromptTokens)
 	for id, pp := range cp.Probes {
 		n := 0
@@ -587,7 +617,8 @@ func dryRunSummary(cp *plan.CollectionPlan, tasks []task) *Result {
 				n++
 			}
 		}
-		fmt.Printf("  %-12s %d 请求（%d 题 × %d 档位 × repeats=%d）\n", id, n, len(pp.QuestionIDs), len(pp.ContextBuckets), pp.Repeats)
+		res.ProbeRequests[id] = n
+		fmt.Fprintf(w, "  %-12s %d 请求（%d 题 × %d 档位 × repeats=%d）\n", id, n, len(pp.QuestionIDs), len(pp.ContextBuckets), pp.Repeats)
 	}
 	return res
 }

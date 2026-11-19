@@ -8,6 +8,22 @@
 
 ### Added
 
+- **AIMD 自适应并发探测**（`runtime.auto_concurrency`，缺省开启）：`transport`
+  从低并发慢启动上探至 `runtime.max_concurrency` 上限（AIMD 模式下该值作为
+  安全上限，默认 8；`runtime.initial_concurrency` 可指定初始并发），遇到
+  429 / 超时 / 连接错误 / 5xx 时乘性退避（同批次退避去抖防止连砍），恢复后
+  平滑回升。关闭该开关即回退为原固定并发信号量，行为与旧版完全一致
+- **HTTP 429 退避重试**：429 从「不可重试的 http_4xx」中单独识别（`error_kind`
+  仍为 `http_4xx`、`http_code=429`，rawData schema 不变），`Runner` 按
+  `Retry-After`（秒数 / 浮点秒 / HTTP-date，受 `backoff_max_ms` 封顶）或指数退避
+  等待后重试，并触发全局冷却窗口，避免并发协程同时顶风撞限流
+- **`pkg/tv` 嵌入式 Go SDK**：面向上层平台（如 TV-Watch）导出统一入口——
+  `ParseSuite`（内存 YAML 解析）、`ValidateInMemory`（免环境变量/免磁盘题库校验）、
+  `BuildPlanSummary`（plan_digest + 干跑请求/token 预算）、`Collect`
+  （`Options.APIKey` 内存直传密钥实现多任务隔离、`OnConcurrency` 并发事件回调）、
+  `ReadRawData` / `ReadRawDataStream`、`Gate` / `PairCells` / `Compare`、
+  `ProbeEndpoint`（复用原生协议适配器的端点探活）以及 JSD / 卡方 / MWU / Fisher
+  统计原语。CLI 行为、配置与 rawData 格式 100% 兼容
 - `--progress`（collect / run）：采集期间在 stderr 画单行进度条，显式开启、
   默认关闭（CI 输出保持逐行日志）。`\r` 原地重绘、不用 ANSI 光标控制，
   重定向到文件时只留下一串 `\r` 分隔的片段而非转义序列；100ms 节流；

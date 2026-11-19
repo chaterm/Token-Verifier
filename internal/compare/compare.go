@@ -429,6 +429,12 @@ func worseThan(a, b probe.BucketVerdict, kind probe.StatKind) bool {
 	return *a.Statistic > *b.Statistic // 距离越大越差
 }
 
+// PairCells 把两侧 record 按 cell_key 分组（仅该探针且 status=success），
+// 返回两侧都存在的配对 cell，按键排序保证确定性（同时导出供嵌入式 ROC/预算重采样使用）。
+func PairCells(a, b *rawdata.File, probeID string, cellKey []string, subset bool) []probe.CellPair {
+	return pairCells(a, b, probeID, cellKey, subset)
+}
+
 // pairCells 把两侧 record 按 cell_key 分组（仅该探针且 status=success），
 // 返回两侧都存在的配对 cell，按键排序保证确定性。
 // subset 为 true（子集模式）时，每个 cell 两侧按 repeat_index 升序

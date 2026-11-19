@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -21,9 +22,14 @@ import (
 // Options 运行时参数（config.Runtime 的子集）。
 type Options struct {
 	MaxConcurrency int
-	TimeoutSec     int
-	MinIntervalMs  int
-	MaxAttempts    int // 含首次
+	// AutoConcurrency 启用 AIMD 自适应并发探测：从低并发慢启动上探至 MaxConcurrency 上限，
+	// 遇到 429 / 超时 / 5xx / 连接错误时乘性退避，恢复后再次平滑回升。
+	AutoConcurrency    bool
+	InitialConcurrency int // 自适应初始并发；<=0 时取 min(2, MaxConcurrency)
+	BackoffDebounceMs  int // AIMD 同批次退避去抖窗口（毫秒）；<=0 时默认 250ms
+	TimeoutSec         int
+	MinIntervalMs      int
+	MaxAttempts        int // 含首次
 	// 重试退避：第 attempt 次重试前等待 min(BackoffBaseMs << attempt, BackoffMaxMs)。
 	BackoffBaseMs int
 	BackoffMaxMs  int
@@ -43,13 +49,14 @@ type Task struct {
 // Result 单次尝试的结果：要么成功响应，要么分类后的错误。
 // 计时字段由 transport 统一填写。
 type Result struct {
-	Response  adapter.Response
-	HTTPCode  int    // 0 = 未收到响应
-	ErrorKind string // 空 = 成功
-	ErrorMsg  string // 已脱敏的原始错误摘要
-	LatencyMs int
-	TtftMs    int // -1 = 非流式或未收到内容 chunk
-	Tps       float64
+	Response   adapter.Response
+	HTTPCode   int           // 0 = 未收到响应
+	ErrorKind  string        // 空 = 成功
+	ErrorMsg   string        // 已脱敏的原始错误摘要
+	LatencyMs  int           // 毫秒耗时
+	TtftMs     int           // -1 = 非流式或未收到内容 chunk
+	Tps        float64       // token/s
+	RetryAfter time.Duration // 429 Retry-After 解析出的建议等待时长（已封顶）
 }
 
 // Client 执行任务的 HTTP 客户端封装。
@@ -148,25 +155,34 @@ func (c *Client) Do(ctx context.Context, t Task) Result {
 		return Result{ErrorKind: kind, ErrorMsg: redact(err.Error(), t.RedactSecret), LatencyMs: msSince(start)}
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body := readSnippet(resp.Body)
-		_ = resp.Body.Close()
-		kind := "http_4xx"
-		switch {
-		case resp.StatusCode >= 500:
-			kind = "http_5xx"
-		case resp.StatusCode >= 300 && resp.StatusCode < 400:
-			// CheckRedirect 已拒绝跟随：重定向本身是证据（端点接线异常或
-			// 恶意转发），单独归类，不参与重试。
-			kind = "http_3xx"
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body := readSnippet(resp.Body)
+			_ = resp.Body.Close()
+			kind := "http_4xx"
+			switch {
+			case resp.StatusCode >= 500:
+				kind = "http_5xx"
+			case resp.StatusCode >= 300 && resp.StatusCode < 400:
+				// CheckRedirect 已拒绝跟随：重定向本身是证据（端点接线异常或
+				// 恶意转发），单独归类，不参与重试。
+				kind = "http_3xx"
+			}
+			var retryAfter time.Duration
+			if resp.StatusCode == http.StatusTooManyRequests {
+				capDur := 60 * time.Second
+				if c.opts.BackoffMaxMs > 0 {
+					capDur = time.Duration(c.opts.BackoffMaxMs) * time.Millisecond
+				}
+				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now(), capDur)
+			}
+			return Result{
+				HTTPCode:   resp.StatusCode,
+				ErrorKind:  kind,
+				ErrorMsg:   redact(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body), t.RedactSecret),
+				LatencyMs:  msSince(start),
+				RetryAfter: retryAfter,
+			}
 		}
-		return Result{
-			HTTPCode:  resp.StatusCode,
-			ErrorKind: kind,
-			ErrorMsg:  redact(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body), t.RedactSecret),
-			LatencyMs: msSince(start),
-		}
-	}
 
 	// 成功路径：按流式与否解析并计时
 	if t.TransportMode == "stream" {
@@ -240,48 +256,142 @@ type Runner struct {
 	// 都算）。进度类消费者按任务计数而不是按尝试计数，否则会原地踏步或超过 100%。
 	// 可能从多个 goroutine 并发调用。
 	OnTaskDone func(idx int)
+	// OnConcurrency AIMD 并发窗口变化或触发限流退避时回调（可选，并发触发）。
+	OnConcurrency func(ev ConcurrencyEvent)
+
+	mu       sync.Mutex
+	lastSnap ConcurrencySnapshot
 }
 
 func NewRunner(c *Client) *Runner { return &Runner{client: c} }
 
-// Run 执行全部任务并等待完成。任务间并发（受 MaxConcurrency 限制），
+// Concurrency 返回最近一次运行（或运行中）的并发统计快照。
+func (r *Runner) Concurrency() ConcurrencySnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastSnap
+}
+
+// isNonRetryable 判断某次失败是否属于不可重试错误。
+// 注意：HTTP 429 虽归在 error_kind="http_4xx"，但属于限流信号，应当退避重试；
+// 其余 4xx（400/401/403/404 等）与 3xx/protocol/parse 重试无意义，立即终止该任务。
+func isNonRetryable(res Result) bool {
+	if res.ErrorKind == "http_4xx" && res.HTTPCode == http.StatusTooManyRequests {
+		return false
+	}
+	return res.ErrorKind == "http_3xx" ||
+		res.ErrorKind == "http_4xx" ||
+		res.ErrorKind == "protocol" ||
+		res.ErrorKind == "parse"
+}
+
+// Run 执行全部任务并等待完成。任务间并发受 AdaptiveLimiter 控制（固定上限或 AIMD 动态探测），
 // ctx 取消后未开始的任务不再发出，已在途的自然结束。
 func (r *Runner) Run(ctx context.Context, tasks []Task, onAttempt func(idx int, attempt int, res Result)) {
-	sem := make(chan struct{}, r.client.opts.MaxConcurrency)
+	if len(tasks) == 0 {
+		return
+	}
+	maxConc := r.client.opts.MaxConcurrency
+	if maxConc < 1 {
+		maxConc = 1
+	}
+	limiter := NewAdaptiveLimiter(
+		r.client.opts.AutoConcurrency,
+		r.client.opts.InitialConcurrency,
+		maxConc,
+		time.Duration(r.client.opts.BackoffDebounceMs)*time.Millisecond,
+		func(ev ConcurrencyEvent) {
+			r.mu.Lock()
+			r.lastSnap = ConcurrencySnapshot{
+				CurrentCwnd:    ev.Cwnd,
+				PeakCwnd:       ev.PeakCwnd,
+				MaxConcurrency: maxConc,
+				InFlight:       ev.InFlight,
+				ThrottleEvents: ev.ThrottleEvents,
+			}
+			r.mu.Unlock()
+			if r.OnConcurrency != nil {
+				r.OnConcurrency(ev)
+			}
+		},
+	)
+	r.mu.Lock()
+	r.lastSnap = limiter.Snapshot()
+	r.mu.Unlock()
+
+	workerCount := maxConc
+	if workerCount > len(tasks) {
+		workerCount = len(tasks)
+	}
+	var nextIdx atomic.Int64
 	var wg sync.WaitGroup
-	for i, t := range tasks {
+	for w := 0; w < workerCount; w++ {
 		wg.Add(1)
-		go func(idx int, t Task) {
+		go func() {
 			defer wg.Done()
-			// 任务粒度进度：无论成败，全部尝试结束后上报一次
-			if r.OnTaskDone != nil {
-				defer r.OnTaskDone(idx)
+			for {
+				if ctx.Err() != nil {
+					return
+				}
+				idx := int(nextIdx.Add(1) - 1)
+				if idx >= len(tasks) {
+					return
+				}
+				r.runSingleTask(ctx, limiter, idx, tasks[idx], onAttempt)
 			}
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			for attempt := 0; attempt < r.client.opts.MaxAttempts; attempt++ {
-				res := r.client.Do(ctx, t)
-				onAttempt(idx, attempt, res)
-				if res.ErrorKind == "" {
-					return
-				}
-				// 3xx/4xx（端点接线、能力/参数类）重试无意义，直接判失败
-				if res.ErrorKind == "http_3xx" || res.ErrorKind == "http_4xx" ||
-					res.ErrorKind == "protocol" || res.ErrorKind == "parse" {
-					return
-				}
-				if attempt == r.client.opts.MaxAttempts-1 {
-					return // 最后一次尝试，无需退避
-				}
-				select {
-				case <-time.After(r.client.backoffFor(attempt)):
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(i, t)
+		}()
 	}
 	wg.Wait()
+
+	r.mu.Lock()
+	r.lastSnap = limiter.Snapshot()
+	r.mu.Unlock()
+}
+
+func (r *Runner) runSingleTask(
+	ctx context.Context,
+	limiter *AdaptiveLimiter,
+	idx int,
+	t Task,
+	onAttempt func(idx int, attempt int, res Result),
+) {
+	started := false
+	defer func() {
+		if started && r.OnTaskDone != nil {
+			r.OnTaskDone(idx)
+		}
+	}()
+
+	for attempt := 0; attempt < r.client.opts.MaxAttempts; attempt++ {
+		if err := limiter.Acquire(ctx); err != nil {
+			// 首次尝试前 ctx 已取消：视作未开始，不发请求
+			return
+		}
+		started = true
+		res := r.client.Do(ctx, t)
+		fallbackCooldown := r.client.backoffFor(attempt)
+		limiter.Release(res, fallbackCooldown, ctx.Err() != nil)
+		onAttempt(idx, attempt, res)
+
+		if res.ErrorKind == "" || isNonRetryable(res) || attempt == r.client.opts.MaxAttempts-1 {
+			return
+		}
+		wait := fallbackCooldown
+		if res.RetryAfter > wait {
+			wait = res.RetryAfter
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		} else if ctx.Err() != nil {
+			return
+		}
+	}
 }
 
 // —— 错误分类 ——

@@ -145,6 +145,15 @@ func Load(path, wantSHA256 string) (*File, error) {
 			return nil, &fileError{msg: "题库文件不可读", path: path, err: err}
 		}
 	}
+	return parseBytes(data, path, wantSHA256)
+}
+
+// Parse 直接从内存 YAML 字节解析并校验题库（供嵌入式平台在线编辑与无盘加载使用）。
+func Parse(data []byte, wantSHA256 string) (*File, error) {
+	return parseBytes(data, "<memory>", wantSHA256)
+}
+
+func parseBytes(data []byte, label, wantSHA256 string) (*File, error) {
 	if wantSHA256 != "" {
 		sum := sha256.Sum256(data)
 		if got := hex.EncodeToString(sum[:]); !strings.EqualFold(got, wantSHA256) {
@@ -153,7 +162,7 @@ func Load(path, wantSHA256 string) (*File, error) {
 	}
 	var f File
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("题库语法错误 %s: %w", path, err)
+		return nil, fmt.Errorf("题库语法错误 %s: %w", label, err)
 	}
 	if err := f.Validate(); err != nil {
 		return nil, err

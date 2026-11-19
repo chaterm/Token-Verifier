@@ -168,12 +168,17 @@ thresholds:
 
 # ── 运行时参数（全部不进 digest）────────────────────────────────────────
 runtime:
-  max_concurrency: 4          # 并发上限，缺省 4
+  max_concurrency: 8          # 并发上限（AIMD 模式下为安全上限），缺省 8
+  auto_concurrency: true      # AIMD 自适应并发探测：低并发慢启动上探，
+                              # 429/超时/连接错误/5xx 乘性退避后平滑回升；
+                              # false 回退为固定并发（缺省上限 4）
+  initial_concurrency: 2      # AIMD 初始并发，缺省 min(2, max_concurrency)
   timeout_sec: 120            # 单请求超时，缺省 120
   min_interval_ms: 0          # 请求最小间隔，用于遵守端点速率限制
-  max_attempts: 3             # 单题尝试上限（含首次），缺省 3
+  max_attempts: 3             # 单题尝试上限（含首次），缺省 3；
+                              # HTTP 429 会按 Retry-After 或指数退避重试
   backoff_base_ms: 500        # 重试退避基准：第 n 次重试前等 base << n 毫秒
-  backoff_max_ms: 30000       # 退避封顶
+  backoff_max_ms: 30000       # 退避封顶（同时作为 429 Retry-After 上限）
   seed: 20260904              # 任务洗牌种子；只影响发出顺序，不影响样本
   raw_level: digest           # digest | full（full 当前版本未实现，会被拒绝）
 

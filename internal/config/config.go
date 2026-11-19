@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -15,38 +16,38 @@ import (
 
 // File 配置文件顶层结构。
 type File struct {
-	Version    int                    `yaml:"version"`
-	Target     Target                 `yaml:"target"`
-	Suite      SuiteRef               `yaml:"suite"`
-	Probes     map[string]ProbeConfig `yaml:"probes"`
-	Thresholds map[string]float64     `yaml:"thresholds"`
-	Runtime    Runtime                `yaml:"runtime"`
-	Padding    Padding                `yaml:"padding"`
+	Version    int                    `yaml:"version" json:"version"`
+	Target     Target                 `yaml:"target" json:"target"`
+	Suite      SuiteRef               `yaml:"suite" json:"suite"`
+	Probes     map[string]ProbeConfig `yaml:"probes" json:"probes"`
+	Thresholds map[string]float64     `yaml:"thresholds" json:"thresholds"`
+	Runtime    Runtime                `yaml:"runtime" json:"runtime"`
+	Padding    Padding                `yaml:"padding" json:"padding"`
 }
 
 // Padding 长上下文填充配置。seed 影响实际送入端点的文本 → 必须进 digest。
 type Padding struct {
 	// Seed 填充文本生成种子；nil = 取 suite.DefaultPaddingSeed（旧行为）。
-	Seed *int64 `yaml:"seed"`
+	Seed *int64 `yaml:"seed" json:"seed"`
 }
 
 // Target 待测端点。compare 不需要，collect/run 必填。
 type Target struct {
-	BaseURL   string           `yaml:"base_url"`
-	APIKeyEnv string           `yaml:"api_key_env"` // 只读环境变量名，密钥不写入配置
-	Model     string           `yaml:"model"`
-	Protocols []ProtocolConfig `yaml:"protocols"`
-	Request   RequestConfig    `yaml:"request"`
+	BaseURL   string           `yaml:"base_url" json:"base_url"`
+	APIKeyEnv string           `yaml:"api_key_env" json:"api_key_env"` // 只读环境变量名，密钥不写入配置
+	Model     string           `yaml:"model" json:"model"`
+	Protocols []ProtocolConfig `yaml:"protocols" json:"protocols"`
+	Request   RequestConfig    `yaml:"request" json:"request"`
 }
 
 // ProtocolConfig 单个协议的配置。
 type ProtocolConfig struct {
-	ID           string        `yaml:"id"`
-	Weight       float64       `yaml:"weight"`
-	Path         string        `yaml:"path"` // 可选，覆盖协议默认路径
-	Capabilities Capabilities  `yaml:"capabilities"`
-	Transport    TransportMix  `yaml:"transport"`
-	Thinking     ThinkingBlock `yaml:"thinking"`
+	ID           string        `yaml:"id" json:"id"`
+	Weight       float64       `yaml:"weight" json:"weight"`
+	Path         string        `yaml:"path" json:"path"` // 可选，覆盖协议默认路径
+	Capabilities Capabilities  `yaml:"capabilities" json:"capabilities"`
+	Transport    TransportMix  `yaml:"transport" json:"transport"`
+	Thinking     ThinkingBlock `yaml:"thinking" json:"thinking"`
 }
 
 // Capabilities 声明式能力。工具信任声明，不做探测。
@@ -84,62 +85,92 @@ func (c *Capabilities) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// UnmarshalJSON 与 UnmarshalYAML 语义一致：未写的字段取缺省 true，
+// 显式写 false 的字段尊重用户意图，并标记本段为显式提供。
+func (c *Capabilities) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Stream        *bool `json:"stream"`
+		Tools         *bool `json:"tools"`
+		Thinking      *bool `json:"thinking"`
+		ContextWindow *int  `json:"context_window"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Present = true
+	c.Stream = raw.Stream == nil || *raw.Stream
+	c.Tools = raw.Tools == nil || *raw.Tools
+	c.Thinking = raw.Thinking == nil || *raw.Thinking
+	if raw.ContextWindow != nil {
+		c.ContextWindow = *raw.ContextWindow
+	}
+	return nil
+}
+
 // TransportMix 协议内流式/非流式的相对比例，归一化后切分该协议的份额。
 type TransportMix struct {
-	Stream    float64 `yaml:"stream"`
-	NonStream float64 `yaml:"non_stream"`
+	Stream    float64 `yaml:"stream" json:"stream"`
+	NonStream float64 `yaml:"non_stream" json:"non_stream"`
 }
 
 // ThinkingBlock 思考配置：disabled（题目无强度时用）与 enabled（有强度时用）。
 // effort_map 的值类型因协议而异（字符串级别或整数预算），用 any 保留。
 type ThinkingBlock struct {
-	Disabled ThinkingMode `yaml:"disabled"`
-	Enabled  ThinkingMode `yaml:"enabled"`
+	Disabled ThinkingMode `yaml:"disabled" json:"disabled"`
+	Enabled  ThinkingMode `yaml:"enabled" json:"enabled"`
 }
 
 // ThinkingMode 一个思考状态下的字段注入。
 type ThinkingMode struct {
-	EffortMap     map[string]any `yaml:"effort_map"`
-	BodyOverrides map[string]any `yaml:"body_overrides"`
+	EffortMap     map[string]any `yaml:"effort_map" json:"effort_map"`
+	BodyOverrides map[string]any `yaml:"body_overrides" json:"body_overrides"`
 }
 
 // RequestConfig 所有协议共享的请求字段。
 type RequestConfig struct {
-	TemperatureField string         `yaml:"temperature_field"` // 点路径，默认 temperature
-	BodyOverrides    map[string]any `yaml:"body_overrides"`
+	TemperatureField string         `yaml:"temperature_field" json:"temperature_field"` // 点路径，默认 temperature
+	BodyOverrides    map[string]any `yaml:"body_overrides" json:"body_overrides"`
 }
 
 // SuiteRef 题库引用。suite 一律外部文件提供，工具不内置。
 type SuiteRef struct {
-	Path   string `yaml:"path"`
-	SHA256 string `yaml:"sha256"` // 可选；给了必须校验通过
+	Path   string `yaml:"path" json:"path"`
+	SHA256 string `yaml:"sha256" json:"sha256"` // 可选；给了必须校验通过
 }
 
 // ProbeConfig 单探针的采集参数（进 digest）。
 type ProbeConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Repeats        int      `yaml:"repeats"` // 每 cell 总请求数，按比例切分
-	Temperature    *float64 `yaml:"temperature"`
-	TopP           *float64 `yaml:"top_p"`
-	MaxTokens      *int     `yaml:"max_tokens"`
-	ContextBuckets []int    `yaml:"context_buckets"`
-	ThinkingEffort *string  `yaml:"thinking_effort"` // 探针级默认；题目级优先
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Repeats        int      `yaml:"repeats" json:"repeats"` // 每 cell 总请求数，按比例切分
+	Temperature    *float64 `yaml:"temperature" json:"temperature"`
+	TopP           *float64 `yaml:"top_p" json:"top_p"`
+	MaxTokens      *int     `yaml:"max_tokens" json:"max_tokens"`
+	ContextBuckets []int    `yaml:"context_buckets" json:"context_buckets"`
+	ThinkingEffort *string  `yaml:"thinking_effort" json:"thinking_effort"` // 探针级默认；题目级优先
 	// MinN 单侧有效样本下限（比较侧判定 insufficient 的门槛）。nil = 取 DefaultMinN。
 	// 影响统计判定 → 必须进 digest。
-	MinN *int `yaml:"min_n"`
+	MinN *int `yaml:"min_n" json:"min_n"`
 }
 
 // Runtime 运行时参数，全部不进 digest。
 type Runtime struct {
-	MaxConcurrency int    `yaml:"max_concurrency"`
-	TimeoutSec     int    `yaml:"timeout_sec"`
-	MinIntervalMs  int    `yaml:"min_interval_ms"`
-	MaxAttempts    int    `yaml:"max_attempts"` // 含首次
-	Seed           int64  `yaml:"seed"`
-	RawLevel       string `yaml:"raw_level"` // digest | full
+	MaxConcurrency int `yaml:"max_concurrency" json:"max_concurrency"`
+	// AutoConcurrency 是否开启 AIMD 自适应并发探测（nil 缺省开启；MaxConcurrency 作为并发上限）。
+	AutoConcurrency    *bool  `yaml:"auto_concurrency" json:"auto_concurrency"`
+	InitialConcurrency int    `yaml:"initial_concurrency" json:"initial_concurrency"`
+	TimeoutSec         int    `yaml:"timeout_sec" json:"timeout_sec"`
+	MinIntervalMs      int    `yaml:"min_interval_ms" json:"min_interval_ms"`
+	MaxAttempts        int    `yaml:"max_attempts" json:"max_attempts"` // 含首次
+	Seed               int64  `yaml:"seed" json:"seed"`
+	RawLevel           string `yaml:"raw_level" json:"raw_level"` // digest | full
 	// 重试退避：第 attempt 次重试前等待 min(base << attempt, max) 毫秒。
-	BackoffBaseMs int `yaml:"backoff_base_ms"`
-	BackoffMaxMs  int `yaml:"backoff_max_ms"`
+	BackoffBaseMs int `yaml:"backoff_base_ms" json:"backoff_base_ms"`
+	BackoffMaxMs  int `yaml:"backoff_max_ms" json:"backoff_max_ms"`
+}
+
+// AutoConcurrencyEnabled 返回自适应并发探测是否启用。
+func (r Runtime) AutoConcurrencyEnabled() bool {
+	return r.AutoConcurrency != nil && *r.AutoConcurrency
 }
 
 // Load 读取 YAML 配置文件，并应用缺省值。
@@ -187,8 +218,16 @@ func (e *fileError) Unwrap() error { return e.err }
 // ApplyDefaults 填缺省值。capabilities 缺省 {true,true,true,0}：
 // 省略与显式写全 true 等价（Present 标记区分「没写」与「显式全 false」）。
 func (f *File) ApplyDefaults() {
+	if f.Runtime.AutoConcurrency == nil {
+		auto := true
+		f.Runtime.AutoConcurrency = &auto
+	}
 	if f.Runtime.MaxConcurrency <= 0 {
-		f.Runtime.MaxConcurrency = 4
+		if f.Runtime.AutoConcurrencyEnabled() {
+			f.Runtime.MaxConcurrency = 8
+		} else {
+			f.Runtime.MaxConcurrency = 4
+		}
 	}
 	if f.Runtime.TimeoutSec <= 0 {
 		f.Runtime.TimeoutSec = 120
@@ -229,6 +268,21 @@ var knownProtocols = map[string]bool{
 // 时 suite.Load 会报一条空路径的 OS 错误（`open : ...`），把「配置缺字段」
 // 伪装成「文件不存在」，极难排查。Validate 内部先调本函数，行为不变。
 func (f *File) ValidateStructure() error {
+	return f.validateStructure(false)
+}
+
+// ValidateInMemory 供嵌入式 SDK 调用：支持内存直传 APIKey 与内存题库（不要求进程环境变量与磁盘题库文件）。
+func (f *File) ValidateInMemory(suiteItems map[string][]SuiteItemInfo, hasInlineAPIKey bool, warn func(string)) error {
+	if warn == nil {
+		warn = func(string) {}
+	}
+	if err := f.validateStructure(hasInlineAPIKey); err != nil {
+		return err
+	}
+	return f.validateProbesAndOverrides(suiteItems, warn)
+}
+
+func (f *File) validateStructure(inMemory bool) error {
 	if f.Version != 1 {
 		return fmt.Errorf("version: 必须为 1，收到 %d", f.Version)
 	}
@@ -238,11 +292,13 @@ func (f *File) ValidateStructure() error {
 	if !strings.HasPrefix(f.Target.BaseURL, "http://") && !strings.HasPrefix(f.Target.BaseURL, "https://") {
 		return fmt.Errorf("target.base_url: 必须是合法 URL（http/https），收到 %q", f.Target.BaseURL)
 	}
-	if strings.TrimSpace(f.Target.APIKeyEnv) == "" {
-		return fmt.Errorf("target.api_key_env: 不能为空（只接受环境变量名，不接受密钥本身）")
-	}
-	if os.Getenv(f.Target.APIKeyEnv) == "" {
-		return fmt.Errorf("target.api_key_env: 环境变量 %s 未设置", f.Target.APIKeyEnv)
+	if !inMemory {
+		if strings.TrimSpace(f.Target.APIKeyEnv) == "" {
+			return fmt.Errorf("target.api_key_env: 不能为空（只接受环境变量名，不接受密钥本身）")
+		}
+		if os.Getenv(f.Target.APIKeyEnv) == "" {
+			return fmt.Errorf("target.api_key_env: 环境变量 %s 未设置", f.Target.APIKeyEnv)
+		}
 	}
 	if strings.TrimSpace(f.Target.Model) == "" {
 		return fmt.Errorf("target.model: 不能为空")
@@ -270,14 +326,16 @@ func (f *File) ValidateStructure() error {
 	if positive == 0 {
 		return fmt.Errorf("target.protocols: 至少一个协议 weight > 0")
 	}
-	if strings.TrimSpace(f.Suite.Path) == "" {
-		return fmt.Errorf("suite.path: 必填（题库文件路径）")
-	}
-	if _, err := os.Stat(f.Suite.Path); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("suite.path: 题库文件不存在: %s", f.Suite.Path)
+	if !inMemory {
+		if strings.TrimSpace(f.Suite.Path) == "" {
+			return fmt.Errorf("suite.path: 必填（题库文件路径）")
 		}
-		return fmt.Errorf("suite.path: 题库文件 %s 不可读: %v", f.Suite.Path, err)
+		if _, err := os.Stat(f.Suite.Path); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("suite.path: 题库文件不存在: %s", f.Suite.Path)
+			}
+			return fmt.Errorf("suite.path: 题库文件 %s 不可读: %v", f.Suite.Path, err)
+		}
 	}
 	switch f.Runtime.RawLevel {
 	case "digest":
@@ -298,6 +356,10 @@ func (f *File) Validate(suiteItems map[string][]SuiteItemInfo, warn func(string)
 	if err := f.ValidateStructure(); err != nil {
 		return err
 	}
+	return f.validateProbesAndOverrides(suiteItems, warn)
+}
+
+func (f *File) validateProbesAndOverrides(suiteItems map[string][]SuiteItemInfo, warn func(string)) error {
 
 	// —— 探针与题库 ——
 	enabled := f.EnabledProbes()

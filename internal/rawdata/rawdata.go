@@ -156,6 +156,17 @@ func Read(path string) (*File, error) {
 	return parse(gz)
 }
 
+// ReadStream 从任意字节流（如对象存储响应体或内存缓冲）读取 gzip 压缩的 rawData。
+func ReadStream(r io.Reader) (*File, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("rawData 不是合法的 gzip 流: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	return parse(gz)
+}
+
 // fileError 读取 rawData 文件的错误：Error() 只印友好文案与路径，把 OS 原文
 // 挡在外面；Unwrap 保留底层错误，调用方仍可用 errors.Is 判定。
 type fileError struct {
