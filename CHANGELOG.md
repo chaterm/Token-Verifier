@@ -55,6 +55,14 @@
 - 配置缺 `suite.path` 时不再报空路径的 OS 错误（`读取题库失败: open : ...`）：
   结构性校验拆为 `config.ValidateStructure()`，在加载题库**之前**先跑，
   直接报「suite.path: 必填（题库文件路径）」
+- `collect.Run` / `tv.Collect` 主动取消（ctx）不再被误报为「端点不可达」：
+  取消优先于致命错误边界判定，返回已采集部分结果与可 `errors.Is` 识别的
+  `context.Canceled` / `context.DeadlineExceeded`，半截证据包保留供断点续采。
+  此前零成功样本时取消会被归因为端点故障，上层平台可能据此触发错误告警
+- `pkg/tv` SDK 入口（`Collect` / `ValidateInMemory` / `BuildPlanSummary`）
+  不再原地改写调用方传入的 `*ConfigFile`：`ApplyDefaults` 改在独立副本上执行
+  （含 Protocols 切片深拷贝）。此前浅拷贝共享底层数组，缺省 capabilities 会
+  污染原始配置，且多 goroutine 共享同一 cfg 并发调用构成数据竞争
 
 ### Added
 

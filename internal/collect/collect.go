@@ -321,7 +321,15 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 	res.ErrorKinds, res.ErrorSamples = errorKinds, errorSamples
 	mu.Unlock()
 
-	// 6. 采集致命错误边界：一个成功样本都没有且从未收到任何 HTTP 响应
+	// 6. 主动取消优先于「端点不可达」判定：返回已采集部分与可 errors.Is 识别的
+	// ctx 错误，避免调用方把用户取消误归因为端点故障（触发错误告警/重试）。
+	// 半截证据包保留在磁盘，供 EnsureFile 断点续采。
+	if ctx.Err() != nil {
+		_ = closeWriter()
+		return res, ctx.Err()
+	}
+
+	// 7. 采集致命错误边界：一个成功样本都没有且从未收到任何 HTTP 响应
 	// = 端点完全不可达。个别请求失败、全 4xx/5xx 都不算 —— 那些是数据本身。
 	if res.SuccessCount == 0 && !gotAnyResponse.Load() {
 		return nil, fmt.Errorf("端点不可达：%d 个请求全部连接失败，未收到任何 HTTP 响应", len(pending))
@@ -331,7 +339,7 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 		return res, err
 	}
 
-	// 7. 读回全部 record（含历史批次）重算 aggregates 并收尾
+	// 8. 读回全部 record（含历史批次）重算 aggregates 并收尾
 	return res, finalize(opts.OutputPath)
 }
 

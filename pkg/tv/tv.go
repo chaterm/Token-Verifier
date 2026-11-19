@@ -144,11 +144,24 @@ func SuiteItemsMap(st *SuiteFile) map[string][]SuiteItemInfo {
 	return out
 }
 
+// cloneConfig 复制配置并独立复制 Protocols 切片：ApplyDefaults 会原地补写
+// 协议 capabilities 与 runtime 缺省值，SDK 入口必须保证不污染调用方原始对象，
+// 同一 *ConfigFile 被多 goroutine 并发传入时也不产生数据竞争。
+func cloneConfig(cfg *ConfigFile) *ConfigFile {
+	cp := *cfg
+	if len(cfg.Target.Protocols) > 0 {
+		cp.Target.Protocols = append([]ProtocolConfig(nil), cfg.Target.Protocols...)
+	}
+	return &cp
+}
+
 // ValidateInMemory 校验内存构造的采集配置与题库（返回全部非阻断警告切片）。
+// 不修改调用方传入的 cfg。
 func ValidateInMemory(cfg *ConfigFile, st *SuiteFile, hasInlineAPIKey bool) ([]string, error) {
-	cfg.ApplyDefaults()
+	cp := cloneConfig(cfg)
+	cp.ApplyDefaults()
 	var warnings []string
-	err := cfg.ValidateInMemory(SuiteItemsMap(st), hasInlineAPIKey, func(w string) {
+	err := cp.ValidateInMemory(SuiteItemsMap(st), hasInlineAPIKey, func(w string) {
 		warnings = append(warnings, w)
 	})
 	return warnings, err
@@ -165,9 +178,9 @@ type PlanSummary struct {
 	ProbeRequests   map[string]int    `json:"probe_requests"`
 }
 
-// BuildPlanSummary 构建采集计划、计算确定性 plan_digest 并估算请求预算（不联网不落盘）。
+// BuildPlanSummary 构建采集计划、计算确定性 plan_digest 并估算请求预算（不联网不落盘，不修改调用方 cfg）。
 func BuildPlanSummary(cfg *ConfigFile, st *SuiteFile) (*PlanSummary, error) {
-	cp := *cfg
+	cp := cloneConfig(cfg)
 	cp.ApplyDefaults()
 	if cp.Version == 0 {
 		cp.Version = 1
@@ -195,7 +208,7 @@ func BuildPlanSummary(cfg *ConfigFile, st *SuiteFile) (*PlanSummary, error) {
 		}}
 	}
 
-	built, err := plan.Build(&cp, st)
+	built, err := plan.Build(cp, st)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +223,7 @@ func BuildPlanSummary(cfg *ConfigFile, st *SuiteFile) (*PlanSummary, error) {
 		}
 	}
 
-	dryRes, err := collect.Run(context.Background(), &cp, st, collect.Options{
+	dryRes, err := collect.Run(context.Background(), cp, st, collect.Options{
 		DryRun:    true,
 		DryRunOut: io.Discard,
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -232,9 +245,11 @@ func BuildPlanSummary(cfg *ConfigFile, st *SuiteFile) (*PlanSummary, error) {
 // —— 在线采集与端点探活 ——
 
 // Collect 执行一次在线采集并将证据写入 opts.OutputPath（支持断点续跑、内存 APIKey 与 AIMD 并发回调）。
+// 不修改调用方传入的 cfg；主动取消时返回已采集部分与 context.Canceled/DeadlineExceeded。
 func Collect(ctx context.Context, cfg *ConfigFile, st *SuiteFile, opts CollectOptions) (*CollectResult, error) {
-	cfg.ApplyDefaults()
-	return collect.Run(ctx, cfg, st, opts)
+	cp := cloneConfig(cfg)
+	cp.ApplyDefaults()
+	return collect.Run(ctx, cp, st, opts)
 }
 
 // EndpointProbeItem 单协议单传输模式的探活结果。
