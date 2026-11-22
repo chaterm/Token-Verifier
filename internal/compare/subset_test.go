@@ -186,6 +186,9 @@ func TestReconcileRelaxedAndIntersect(t *testing.T) {
 	if pp.Repeats != 12 {
 		t.Errorf("repeats = %d, want 12（取小）", pp.Repeats)
 	}
+	if pp.MinN != 5 {
+		t.Errorf("min_n = %d, want 5（两侧均有烘焙值时取小）", pp.MinN)
+	}
 	want := []int{0, 32000}
 	if len(pp.ContextBuckets) != 2 || pp.ContextBuckets[0] != want[0] || pp.ContextBuckets[1] != want[1] {
 		t.Errorf("buckets = %v, want %v（交集升序）", pp.ContextBuckets, want)
@@ -481,6 +484,45 @@ func TestRunWithSubsetMinNFromLocalConfig(t *testing.T) {
 	}
 	if res.Scope.MinN["onetoken"] != 5 {
 		t.Errorf("Scope.MinN = %v, want 5（展示生效值）", res.Scope.MinN)
+	}
+}
+
+func TestRunWithSubsetDifferentBakedMinNTakesSmallerSymmetrically(t *testing.T) {
+	// 典型线上场景：A 为全量锚点基线（repeats=10, min_n=10），B 为轻量巡检计划（repeats=5, min_n=5），
+	// 无本地 config（cfg=nil）。子集对齐将两侧降采样到 5 后，生效 min_n 必须取较小值 5（而非 A 侧的 10），
+	// 否则「少的匹配多的」会死锁为 inconclusive，且与 B vs A 行列不对称。
+	var recsFull, recsLight []map[string]any
+	for i := 0; i < 10; i++ {
+		recsFull = append(recsFull, otRecord("q1", 0, "7", map[string]any{"repeat_index": i}))
+	}
+	for i := 0; i < 5; i++ {
+		recsLight = append(recsLight, otRecord("q1", 0, "7", map[string]any{"repeat_index": i}))
+	}
+	full := probePlan{repeats: 10, buckets: []int{0}, minN: 10}.file(t, "sha256:full", recsFull)
+	light := probePlan{repeats: 5, buckets: []int{0}, minN: 5}.file(t, "sha256:light", recsLight)
+
+	// 正向：Baseline(多) vs Candidate(少)
+	resAB, err := RunWith(full, light, map[string]float64{"onetoken": 0.15}, nil, Options{AllowSubset: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resAB.Verdicts[0].Verdict != "pass" {
+		t.Fatalf("full vs light 应 pass，实际 %s (%s)", resAB.Verdicts[0].Verdict, resAB.Verdicts[0].Note)
+	}
+	if resAB.Scope == nil || resAB.Scope.MinN["onetoken"] != 5 {
+		t.Errorf("full vs light Scope.MinN = %+v, want 5", resAB.Scope)
+	}
+
+	// 反向：行列互换 light vs full 必须完全对称
+	resBA, err := RunWith(light, full, map[string]float64{"onetoken": 0.15}, nil, Options{AllowSubset: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resBA.Verdicts[0].Verdict != "pass" {
+		t.Fatalf("light vs full 应 pass，实际 %s (%s)", resBA.Verdicts[0].Verdict, resBA.Verdicts[0].Note)
+	}
+	if resBA.Scope == nil || resBA.Scope.MinN["onetoken"] != 5 {
+		t.Errorf("light vs full Scope.MinN = %+v, want 5", resBA.Scope)
 	}
 }
 

@@ -197,19 +197,17 @@ func RunWith(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.
 
 // resolveMinN 解析探针生效的单侧样本下限。min_n 是判据参数而非采集参数
 // （与 thresholds 同类，不进可比性闸门），优先级：
-// 本地 config（probes.<id>.min_n）> 计划烘焙值（A 侧，缺则 B 侧）> DefaultMinN > 探针默认。
-// repeats 取小后使用者常需要下调 min_n，本地 config 必须能覆盖两侧计划里的旧值。
+// 本地 config（probes.<id>.min_n）> 计划烘焙调和值（两侧均有值时取较小值）> DefaultMinN > 探针默认。
+// 子集模式下 repeats 取小并降采样，计划烘焙值同步取 min(planA, planB)，保证轻量计划
+// 向高采样基线对齐时对称可判；若两侧计划均未下调 min_n，仍可由本地 config 覆盖。
 func resolveMinN(cfg *config.File, id string, planA, planB rawdata.ProbePlan, p probe.Probe) int {
 	if cfg != nil {
 		if pc, ok := cfg.Probes[id]; ok && pc.MinN != nil && *pc.MinN >= 1 {
 			return *pc.MinN
 		}
 	}
-	if planA.MinN >= 1 {
-		return planA.MinN
-	}
-	if planB.MinN >= 1 {
-		return planB.MinN
+	if m := ReconcileMinN(planA.MinN, planB.MinN); m >= 1 {
+		return m
 	}
 	if v, ok := config.DefaultMinN[id]; ok {
 		return v

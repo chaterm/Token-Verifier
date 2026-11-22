@@ -383,7 +383,7 @@ Add --allow-subset to compare only the reconciled intersection of the two plans.
 
 **子集比较（`--allow-subset`）**
 
-默认闸门要求两侧计划逐字节一致。`tv compare --allow-subset`（`tv run` 同名 flag）把它放宽为字段级三分法：采样与身份类字段（`temperature`、`top_p`、`max_tokens`、`thinking_effort`、`probe_version`、`observation_schema`、`normalize_rule`、`cell_key`，以及 plan 层的题库 / 填充 / 归一化）仍须完全一致，否则照样拒绝；`context_buckets` 取交集（单侧独有的档位剔除并列出）；`repeats` 取两侧较小值，且每个 cell 按 `repeat_index` 降采样到 `min(nA, nB)`，让已标定的 JSD 阈值继续成立；`min_n` 闸门忽略（它是和 `thresholds` 同类的判据参数，只在比较时被消费），生效值按 `本地 config > 计划烘焙值 > 缺省` 解析。探针集合本身也取交集 —— disabled 探针根本不进计划，所以「两侧都存在」恰好等价于「两侧都 enabled」。
+默认闸门要求两侧计划逐字节一致。`tv compare --allow-subset`（`tv run` 同名 flag）把它放宽为字段级三分法：采样与身份类字段（`temperature`、`top_p`、`max_tokens`、`thinking_effort`、`probe_version`、`observation_schema`、`normalize_rule`、`cell_key`，以及 plan 层的题库 / 填充 / 归一化）仍须完全一致，否则照样拒绝；`context_buckets` 取交集（单侧独有的档位剔除并列出）；`repeats` 取两侧较小值，且每个 cell 按 `repeat_index` 降采样到 `min(nA, nB)`，让已标定的 JSD 阈值继续成立；`min_n` 闸门忽略（它是和 `thresholds` 同类的判据参数，只在比较时被消费），生效值按 `本地 config > 两侧计划烘焙较小值 > 缺省` 解析。探针集合本身也取交集 —— disabled 探针根本不进计划，所以「两侧都存在」恰好等价于「两侧都 enabled」。
 
 缩水的范围不可能被错过：stdout 报告的第一段就是 `SCOPE`（两侧 digest、参与比较的探针与生效 repeats/min_n、每个被排除的探针/档位及原因），JSON 报告带 `"subset": true` 与 `scope` 对象，JUnit 以 properties 携带同样信息，且子集全 pass 的退出码是 `6`，永远不是 `0`。
 

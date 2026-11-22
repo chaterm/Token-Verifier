@@ -271,7 +271,7 @@ digest 是硬闸，diff 是给人看的定位信息 —— 不是「差异不大
 | strict | plan 层：`suite_version` / `padding_algo_version` / `padding_seed` / `normalize` / `output_contract`；探针层：`probe_version` / `observation_schema` / `normalize_rule` / `cell_key` / `question_ids` / `temperature` / `top_p` / `max_tokens` / `thinking_effort` | 不等仍拒绝（exit 3）。这些字段决定「观测是什么、怎么配对、请求发的是什么」，放宽等于拿两套实验对比 |
 | intersect | `context_buckets` | 按两侧**声明**的档位取交集；单侧独有档位剔除并记录；无交集则该探针整体剔除 |
 | relaxed | `repeats` | 取两侧较小值。cell 内按 `repeat_index` 升序截断到 `min(nA, nB)` 降采样对齐 —— JSD 类统计量对两侧样本量不对称敏感（小样本系统性抬高 JSD），降采样让已标定的阈值继续成立；取前 k 个而非随机抽样，保证确定性 |
-| relaxed | `min_n` | 闸门忽略。min_n 是判据参数而非采集参数（与 thresholds 同类，只被比较侧消费），比较时按 `本地 config > 计划烘焙值 > DefaultMinN > 探针默认` 解析，报告印出生效值。**该解析规则对严格模式同样生效**：digest 一致时两侧烘焙值必然相同，但带 `-c` 比较时本地 config 的值可覆盖它 —— digest 一致不再蕴含判定参数完全一致，这是与 thresholds 对齐的有意取舍 |
+| relaxed | `min_n` | 闸门忽略。min_n 是判据参数而非采集参数（与 thresholds 同类，只被比较侧消费），比较时按 `本地 config > 计划烘焙调和值（两侧均有值时取较小值） > DefaultMinN > 探针默认` 解析，报告印出生效值。**该解析规则对严格模式同样生效**：digest 一致时两侧烘焙值必然相同，但带 `-c` 比较时本地 config 的值可覆盖它 —— digest 一致不再蕴含判定参数完全一致，这是与 thresholds 对齐的有意取舍 |
 
 探针集合也按交集：disabled 探针不进计划（`plan.Build` 只遍历 enabled 的），
 所以「两侧都存在的探针」天然等价于「两侧都 enabled 的探针」。单侧独有的探针

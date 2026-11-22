@@ -73,7 +73,7 @@ padding:                      # 长上下文填充（bucket > 0 时生效）
 同名）把 `probes` 段放宽为字段级三分法：采样/身份字段（`temperature` / `top_p` /
 `max_tokens` / `thinking_effort` 及探针版本、观测 schema、归一化规则、`cell_key`、
 `question_ids`）仍须一致；`context_buckets` 取交集；`repeats` 取小并按
-`repeat_index` 降采样对齐；`min_n` 闸门忽略、比较时按 `本地 config > 计划烘焙值 >
+`repeat_index` 降采样对齐；`min_n` 闸门忽略、比较时按 `本地 config > 两侧计划烘焙较小值 >
 缺省` 解析。完整规则见 DATAFLOW.md §3.2。
 
 ## 2. target
@@ -423,7 +423,7 @@ probes:
 | `temperature` / `top_p` / `max_tokens` | 采样参数，进 digest |
 | `context_buckets` | 该探针要跑的上下文长度档位，`0` 表示不加填充 |
 | `thinking_effort` | 探针级默认强度；题目上的同名字段优先 |
-| `min_n` | 单侧有效样本下限（比较侧判 insufficient 的门槛），进 digest。缺省：onetoken 10、tokenizer 1、needle 1、think-effort 5、toolcall 5。显式给出时必须 ≥ 1。降低它可以让小样本参与统计，但分布估计会更粗糙；tokenizer 的相等性判定不消费该值（单样本即可判），仅随计划记录。判据参数（与 thresholds 同类，严格与子集模式一致）：比较时按 `本地 config > 计划烘焙值 > 缺省` 解析 —— 采集后改本地 config 里的 `min_n` 会影响同 digest 数据的判定；`--allow-subset` 下闸门忽略两侧差异 |
+| `min_n` | 单侧有效样本下限（比较侧判 insufficient 的门槛），进 digest。缺省：onetoken 10、tokenizer 1、needle 1、think-effort 5、toolcall 5。显式给出时必须 ≥ 1。降低它可以让小样本参与统计，但分布估计会更粗糙；tokenizer 的相等性判定不消费该值（单样本即可判），仅随计划记录。判据参数（与 thresholds 同类，严格与子集模式一致）：比较时按 `本地 config > 两侧计划烘焙较小值 > 缺省` 解析 —— 采集后改本地 config 里的 `min_n` 会影响同 digest 数据的判定；`--allow-subset` 下闸门忽略两侧差异并取较小烘焙值 |
 
 `onetoken` 的温度固定语义为「要采样分布形状」，配置成 0 会让分布退化成单点、
 探针失去意义。校验阶段对 `onetoken.temperature < 0.5` 发出警告。

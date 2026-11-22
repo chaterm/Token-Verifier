@@ -107,7 +107,7 @@ suite:
 #   intersect  context_buckets —— 按两侧声明的档位取交集，无交集则该探针剔除
 #   relaxed    repeats —— 取两侧较小值，cell 内按 repeat_index 降采样对齐
 #              min_n —— 闸门忽略（判据参数，同 thresholds），比较时按
-#                       config > 计划烘焙值 > 缺省 解析
+#                       config > 两侧计划烘焙较小值 > 缺省 解析
 # 探针集合本身也按交集：disabled 探针不进计划，「两侧都有」即「两侧都 enabled」。
 probes:
   onetoken:

@@ -12,7 +12,8 @@
 //	intersect —— context_buckets：按两侧声明的档位取交集；无交集则该探针剔除
 //	relaxed   —— repeats：取两侧较小值，cell 内按 repeat_index 降采样对齐
 //	             min_n：闸门忽略（判据参数而非采集参数，与 thresholds 同类），
-//	                    比较时按 本地 config > 计划烘焙值 > 探针默认 解析
+//	                    两侧均有烘焙值时取较小值（对齐 repeats 降采样），比较时按
+//	                    本地 config > 调和后计划烘焙值 > 探针默认 解析
 //
 // question_set_digest 例外：它是派生字段（全部启用探针 question_ids 并集的
 // 哈希），两侧启用探针集合不同时必然不等 —— 这正是子集模式要容忍的差异。
@@ -169,11 +170,19 @@ func ReconcilePlans(rawA, rawB json.RawMessage, digestA, digestB string) (*Recon
 				"探针 %s repeats 取两侧较小值 %d（A=%d, B=%d），cell 内按 repeat_index 降采样对齐",
 				id, eff.Repeats, pa.Repeats, pb.Repeats))
 		}
-		// min_n 不参与调和：闸门忽略，比较侧按 config > plan > default 解析
+		// min_n 闸门忽略，计划层与 repeats 一致取两侧较小值（对齐降采样后的样本规模，
+		// 且保证 A/B 行列交换对称）；比较侧仍允许本地 config 显式覆盖。
+		eff.MinN = ReconcileMinN(pa.MinN, pb.MinN)
 		if pa.MinN != pb.MinN {
-			rec.Notes = append(rec.Notes, fmt.Sprintf(
-				"探针 %s 两侧计划烘焙的 min_n 不一致（A=%d, B=%d），生效值由比较侧解析（config > plan > default）",
-				id, pa.MinN, pb.MinN))
+			if pa.MinN >= 1 && pb.MinN >= 1 {
+				rec.Notes = append(rec.Notes, fmt.Sprintf(
+					"探针 %s 两侧计划烘焙的 min_n 不一致（A=%d, B=%d），取两侧较小值 %d（本地 config 可覆盖）",
+					id, pa.MinN, pb.MinN, eff.MinN))
+			} else {
+				rec.Notes = append(rec.Notes, fmt.Sprintf(
+					"探针 %s 两侧计划烘焙的 min_n 不一致（A=%d, B=%d），生效值由比较侧解析（config > plan > default）",
+					id, pa.MinN, pb.MinN))
+			}
 		}
 
 		rec.Probes[id] = eff
@@ -387,4 +396,26 @@ func sortedProbeIDs(probes map[string]rawdata.ProbePlan) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// ReconcileMinN 调和两侧计划烘焙的 min_n（<=0 表示旧 rawData 未烘焙该字段）：
+//   - 两侧均有值：取较小值 min(a, b)，与 repeats 降采样取小保持一致，
+//     避免轻量计划（小 repeats + 小 min_n）向高采样基线子集对齐时被大侧门槛卡死，
+//     同时保证 Compare(A, B) 与 Compare(B, A) 对称；
+//   - 仅单侧有值：取有值一侧；
+//   - 两侧均无值：返回 0（交由比较侧回退 DefaultMinN / 探针默认）。
+func ReconcileMinN(a, b int) int {
+	if a >= 1 && b >= 1 {
+		if b < a {
+			return b
+		}
+		return a
+	}
+	if a >= 1 {
+		return a
+	}
+	if b >= 1 {
+		return b
+	}
+	return 0
 }
