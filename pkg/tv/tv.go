@@ -284,8 +284,7 @@ func ProbeEndpoint(ctx context.Context, target TargetConfig, apiKey string, time
 		TimeoutSec:     timeoutSec,
 		MaxAttempts:    1,
 	})
-	maxTok := 32
-	temp := 0.0
+	maxTok := 64
 
 	var results []EndpointProbeItem
 	for _, proto := range target.Protocols {
@@ -315,7 +314,6 @@ func ProbeEndpoint(ctx context.Context, target TargetConfig, apiKey string, time
 				System:           "Reply concisely.",
 				Prompt:           "Echo exactly: Hello TV-Watch",
 				MaxTokens:        &maxTok,
-				Temperature:      &temp,
 				Stream:           mode == "stream",
 				Path:             proto.Path,
 				TemperatureField: target.Request.TemperatureField,
