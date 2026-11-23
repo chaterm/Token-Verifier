@@ -163,6 +163,7 @@ func RunWith(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.
 			continue
 		}
 		pairs := pairCells(a, b, id, rec.Probes[id].CellKey, !rec.Identical)
+		preFilter := pairs
 		if !rec.Identical && len(probeBuckets[id]) > 0 {
 			pairs = filterPairsByBuckets(pairs, probeBuckets[id])
 		}
@@ -182,6 +183,10 @@ func RunWith(a, b *rawdata.File, flagThresholds map[string]float64, cfg *config.
 			v.ThresholdSource = th.Source
 		}
 		if v.Verdict == "inconclusive" {
+			if len(pairs) == 0 {
+				// 探针层只见空配对，只能报症状；这里用两侧原始 record 升级为根因诊断
+				v.Note = noPairsNote(a, b, id, rec.Probes[id].CellKey, preFilter)
+			}
 			v.Note = strings.Join(append([]string{v.Note}, skippedNotes(id, a, b)...), "; ")
 		}
 		res.Verdicts = append(res.Verdicts, v)
@@ -276,6 +281,41 @@ func filterPairsByBuckets(pairs []probe.CellPair, buckets []int) []probe.CellPai
 		}
 	}
 	return keep
+}
+
+// noPairsNote 诊断配对为空的根因。探针层只见空配对，只能报「两侧没有共同 cell」；
+// compare 层持有两侧原始 record，区分到可操作的粒度：单侧无成功样本（请求全失败/
+// 被能力裁剪跳过）、两侧均无、或两侧都有样本但 cell 键不相交。
+// preFilter 是档位过滤前的配对结果：非空说明存在配对 cell 但全被交集档位排除
+// （计划与数据不一致的 rawData）。复用 groupByCell 保证与配对同口径（仅 success、同 cell_key）。
+func noPairsNote(a, b *rawdata.File, probeID string, cellKey []string, preFilter []probe.CellPair) string {
+	if len(preFilter) > 0 {
+		return "存在配对 cell 但全部落在交集档位之外（计划与实际数据不一致）"
+	}
+	if len(cellKey) == 0 {
+		cellKey = []string{"question_id", "context_bucket"} // 与 pairCells 同默认
+	}
+	na := countCellObs(groupByCell(a.Records, probeID, cellKey))
+	nb := countCellObs(groupByCell(b.Records, probeID, cellKey))
+	switch {
+	case na == 0 && nb == 0:
+		return "两侧均无该探针的成功样本（请求全部失败、被能力裁剪跳过或未采集），无法配对"
+	case na == 0:
+		return fmt.Sprintf("A 侧无该探针的成功样本（B 侧 %d 条），无法配对：A 侧请求可能全部失败或被跳过", nb)
+	case nb == 0:
+		return fmt.Sprintf("B 侧无该探针的成功样本（A 侧 %d 条），无法配对：B 侧请求可能全部失败或被跳过", na)
+	default:
+		return fmt.Sprintf("两侧均有成功样本（A %d 条 / B %d 条）但 cell 键无交集：请核对题目/档位/协议/思考强度是否一致", na, nb)
+	}
+}
+
+// countCellObs 一侧全部 cell 的观测总数。
+func countCellObs(groups map[string]*cellGroup) int {
+	n := 0
+	for _, g := range groups {
+		n += len(g.obs)
+	}
+	return n
 }
 
 // BucketedCellKey 判断计划的 cell_key 是否含 context_bucket 维度。
