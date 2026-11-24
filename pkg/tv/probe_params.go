@@ -21,6 +21,7 @@ const (
 	maxParamProbeCustomCases       = 8
 	maxParamProbeEffortCandidates  = 8
 	maxParamProbeExtraTemperatures = 6
+	maxParamProbeTimeoutSec        = 600
 	paramProbeTempPrompt           = "Reply with ok."
 	paramProbeThinkingPrompt       = "What is 17 * 23? Answer with the final number only."
 )
@@ -158,12 +159,14 @@ func ProbeEndpointParams(
 		return nil, err
 	}
 
+	// 单请求超时跟随被测端点：调用方（TV-Watch）缺省会传端点自身 runtime.timeout_sec
+	// （慢端点可达数百秒），上限仅防御离谱值，避免轻量探测被慢模型误判 timeout。
 	timeoutSec := opts.TimeoutSec
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
-	if timeoutSec > 60 {
-		timeoutSec = 60
+	if timeoutSec > maxParamProbeTimeoutSec {
+		timeoutSec = maxParamProbeTimeoutSec
 	}
 
 	tempField := target.Request.TemperatureField
