@@ -20,7 +20,7 @@ func minimalCfg(t *testing.T, st *suite.File) *config.File {
 			Protocols: []config.ProtocolConfig{
 				{ID: "openai-chat", Weight: 1.0,
 					Transport:    config.TransportMix{Stream: 1.0},
-					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true},
+					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true},
 					Thinking: config.ThinkingBlock{
 						Enabled: config.ThinkingMode{EffortMap: map[string]any{"low": "low"}},
 					},
@@ -150,6 +150,7 @@ func TestDigestStabilityAndSensitivity(t *testing.T) {
 	cfg4.Target.BaseURL = "https://other.example.com"
 	cfg4.Target.Protocols[0].Weight = 0.2
 	cfg4.Target.Protocols[0].Capabilities.ContextWindow = 999
+	cfg4.Target.Protocols[0].Capabilities.Temperature = false
 	cfg4.Target.Protocols[0].Thinking.Enabled.EffortMap["low"] = "medium"
 	cfg4.Target.Request.TemperatureField = "generation_config.temperature"
 	cfg4.Target.Request.BodyOverrides = map[string]any{"top_k": 40}

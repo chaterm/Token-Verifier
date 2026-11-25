@@ -268,7 +268,7 @@ target:
   protocols:
     - id: openai-chat
       weight: 1.0
-      capabilities: { stream: false, tools: false, thinking: false, context_window: 0 }
+      capabilities: { stream: false, tools: false, thinking: false, temperature: false, context_window: 0 }
       transport: { stream: 0.0, non_stream: 1.0 }
 suite:
   path: ` + makeSuite(t) + `
@@ -277,7 +277,7 @@ probes:
 `
 	cfg := writeTemp(t, y)
 	c := cfg.Target.Protocols[0].Capabilities
-	if c.Stream || c.Tools || c.Thinking {
+	if c.Stream || c.Tools || c.Thinking || c.Temperature {
 		t.Errorf("显式全 false 被翻转: %+v", c)
 	}
 	if err := cfg.Validate(onetokenItems(), func(string) {}); err != nil {
@@ -303,7 +303,7 @@ probes:
 `
 	cfg1 := writeTemp(t, y1)
 	c1 := cfg1.Target.Protocols[0].Capabilities
-	if !c1.Stream || !c1.Tools || !c1.Thinking || c1.ContextWindow != 0 {
+	if !c1.Stream || !c1.Tools || !c1.Thinking || !c1.Temperature || c1.ContextWindow != 0 {
 		t.Errorf("缺省应为全 true + 窗口 0: %+v", c1)
 	}
 
@@ -325,7 +325,7 @@ probes:
 `
 	cfg2 := writeTemp(t, y2)
 	c2 := cfg2.Target.Protocols[0].Capabilities
-	if c2.Stream || !c2.Tools || !c2.Thinking {
+	if c2.Stream || !c2.Tools || !c2.Thinking || !c2.Temperature {
 		t.Errorf("部分给出: stream=false 其余 true，得到 %+v", c2)
 	}
 }

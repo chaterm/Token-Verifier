@@ -52,13 +52,14 @@ type ProtocolConfig struct {
 
 // Capabilities 声明式能力。工具信任声明，不做探测。
 // 不进 digest（网关接线细节）；原样记录在 manifest 供归因。
-// 缺省 {true,true,true,0}（SPEC-CONFIG §3.2）。
+// 缺省 {true,true,true,true,0}（SPEC-CONFIG §3.2）。
 // Present 记录 YAML 里是否显式给出该段 —— 用来区分「没写」与
 // 「显式写了全 false」（纯文本端点是合法配置，不能被缺省值翻转）。
 type Capabilities struct {
 	Stream        bool `yaml:"stream" json:"stream"`
 	Tools         bool `yaml:"tools" json:"tools"`
 	Thinking      bool `yaml:"thinking" json:"thinking"`
+	Temperature   bool `yaml:"temperature" json:"temperature"`
 	ContextWindow int  `yaml:"context_window" json:"context_window"` // 0 = 不按窗口裁档位
 	Present       bool `yaml:"-" json:"-"`
 }
@@ -70,6 +71,7 @@ func (c *Capabilities) UnmarshalYAML(value *yaml.Node) error {
 		Stream        *bool `yaml:"stream"`
 		Tools         *bool `yaml:"tools"`
 		Thinking      *bool `yaml:"thinking"`
+		Temperature   *bool `yaml:"temperature"`
 		ContextWindow *int  `yaml:"context_window"`
 	}
 	if err := value.Decode(&raw); err != nil {
@@ -79,6 +81,7 @@ func (c *Capabilities) UnmarshalYAML(value *yaml.Node) error {
 	c.Stream = raw.Stream == nil || *raw.Stream
 	c.Tools = raw.Tools == nil || *raw.Tools
 	c.Thinking = raw.Thinking == nil || *raw.Thinking
+	c.Temperature = raw.Temperature == nil || *raw.Temperature
 	if raw.ContextWindow != nil {
 		c.ContextWindow = *raw.ContextWindow
 	}
@@ -92,6 +95,7 @@ func (c *Capabilities) UnmarshalJSON(data []byte) error {
 		Stream        *bool `json:"stream"`
 		Tools         *bool `json:"tools"`
 		Thinking      *bool `json:"thinking"`
+		Temperature   *bool `json:"temperature"`
 		ContextWindow *int  `json:"context_window"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -101,6 +105,7 @@ func (c *Capabilities) UnmarshalJSON(data []byte) error {
 	c.Stream = raw.Stream == nil || *raw.Stream
 	c.Tools = raw.Tools == nil || *raw.Tools
 	c.Thinking = raw.Thinking == nil || *raw.Thinking
+	c.Temperature = raw.Temperature == nil || *raw.Temperature
 	if raw.ContextWindow != nil {
 		c.ContextWindow = *raw.ContextWindow
 	}
@@ -248,10 +253,10 @@ func (f *File) ApplyDefaults() {
 		f.Target.Request.TemperatureField = "temperature"
 	}
 	for i := range f.Target.Protocols {
-		// capabilities 整段缺省（未写）时给缺省值 {true,true,true,0}。
+		// capabilities 整段缺省（未写）时给缺省值 {true,true,true,true,0}。
 		// 写了的段由 UnmarshalYAML 按字段处理，显式全 false 不会被翻转。
 		if !f.Target.Protocols[i].Capabilities.Present {
-			f.Target.Protocols[i].Capabilities = Capabilities{Stream: true, Tools: true, Thinking: true, Present: true}
+			f.Target.Protocols[i].Capabilities = Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true, Present: true}
 		}
 	}
 }

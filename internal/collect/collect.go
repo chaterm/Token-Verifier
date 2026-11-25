@@ -465,6 +465,10 @@ func expandTasks(cfg *config.File, st *suite.File, cp *plan.CollectionPlan, norm
 					if probeID == "needle" {
 						padding = suite.AssembleNeedleContext(padding, item.ID, needlePositions)
 					}
+					effTemp := pp.Temperature
+					if !proto.Capabilities.Temperature {
+						effTemp = nil
+					}
 					for i := 0; i < n; i++ {
 						lr := adapter.LogicalRequest{
 							Model:            cfg.Target.Model,
@@ -472,7 +476,7 @@ func expandTasks(cfg *config.File, st *suite.File, cp *plan.CollectionPlan, norm
 							Prompt:           item.Prompt,
 							Padding:          padding,
 							MaxTokens:        pp.MaxTokens,
-							Temperature:      pp.Temperature,
+							Temperature:      effTemp,
 							TopP:             pp.TopP,
 							Stream:           mode == "stream",
 							Path:             proto.Path,

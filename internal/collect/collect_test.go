@@ -94,7 +94,7 @@ func testConfig(t *testing.T, baseURL, suitePath string) *config.File {
 			Protocols: []config.ProtocolConfig{
 				{ID: "openai-chat", Weight: 1.0,
 					Transport:    config.TransportMix{Stream: 0.5, NonStream: 0.5},
-					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true},
+					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true},
 					Thinking:     config.ThinkingBlock{Disabled: config.ThinkingMode{BodyOverrides: map[string]any{}}}},
 			},
 			Request: config.RequestConfig{TemperatureField: "temperature"},
@@ -660,6 +660,65 @@ func TestCollectProgressCallback(t *testing.T) {
 	}
 	if res2.TotalRequests != 0 {
 		t.Fatalf("续跑应无新请求，得到 %d", res2.TotalRequests)
+	}
+}
+
+// 端点声明 capabilities.temperature = false（锁温模型）时，即使计划中配置了
+// temperature = 1.0 / 0.0，采集发出的请求体也应自动省略 temperature 字段，
+// 同时 plan_digest 保持与支持温度的端点逐字节一致。
+func TestCollectTemperatureCapabilityFalseOmitsTemperature(t *testing.T) {
+	os.Setenv("TV_E2E_KEY", "sk-e2e")
+	defer os.Unsetenv("TV_E2E_KEY")
+	suitePath := testSuite(t)
+
+	var sawTemperature atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err == nil {
+			if _, ok := body["temperature"]; ok {
+				sawTemperature.Store(true)
+				w.WriteHeader(400)
+				fmt.Fprint(w, `{"error":{"message":"temperature is not supported for this model"}}`)
+				return
+			}
+		}
+		fakeOpenAI{mode: "same"}.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	st, _ := suite.Load(suitePath, "")
+
+	cfgNormal := testConfig(t, srv.URL, suitePath)
+	pLocked := cfgNormal.Target.Protocols[0]
+	pLocked.Capabilities.Temperature = false
+	pLocked.Capabilities.Present = true
+	cfgLocked := testConfig(t, srv.URL, suitePath)
+	cfgLocked.Target.Protocols[0] = pLocked
+
+	out := filepath.Join(t.TempDir(), "locked.rawdata.jsonl.gz")
+	res, err := Run(context.Background(), cfgLocked, st, Options{OutputPath: out})
+	if err != nil {
+		t.Fatalf("锁温端点采集失败: %v", err)
+	}
+	if sawTemperature.Load() {
+		t.Fatalf("capabilities.temperature=false 时不应在请求体中发送 temperature 字段")
+	}
+	if res.ErrorCount != 0 || res.SuccessCount != res.TotalRequests {
+		t.Fatalf("锁温端点应全部成功: %+v", res)
+	}
+
+	f, err := rawdata.Read(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caps map[string]config.Capabilities
+	if err := json.Unmarshal(f.Manifest.Capabilities, &caps); err != nil {
+		t.Fatal(err)
+	}
+	if caps["openai-chat"].Temperature {
+		t.Errorf("manifest.capabilities 应记录 temperature=false，得到 %+v", caps["openai-chat"])
 	}
 }
 

@@ -69,12 +69,14 @@ gzip 压缩的 NDJSON。三段式，每行一个 JSON 对象，用 `kind` 区分
       "stream": true,
       "tools": true,
       "thinking": true,
+      "temperature": true,
       "context_window": 131072
     },
     "anthropic-messages": {
       "stream": true,
       "tools": true,
       "thinking": false,
+      "temperature": true,
       "context_window": 200000
     }
   },

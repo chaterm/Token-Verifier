@@ -119,7 +119,7 @@ probes:
 				ID:           "openai-chat",
 				Path:         "/v1/chat/completions",
 				Weight:       1,
-				Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, ContextWindow: 128000},
+				Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true, ContextWindow: 128000},
 				Transport:    config.TransportMix{NonStream: 1.0},
 			}},
 			Request: config.RequestConfig{TemperatureField: "temperature"},

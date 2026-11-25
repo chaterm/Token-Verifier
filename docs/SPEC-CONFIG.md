@@ -92,6 +92,7 @@ target:
         stream: true
         tools: true
         thinking: true
+        temperature: true
         context_window: 131072
       transport:
         stream: 0.5
@@ -113,6 +114,7 @@ target:
         stream: true
         tools: true
         thinking: false
+        temperature: true
         context_window: 200000
       transport:
         stream: 1.0
@@ -167,6 +169,7 @@ capabilities:
   stream: true          # 该协议上流式是否可用
   tools: true           # 是否支持工具调用
   thinking: true        # 是否接受思考配置
+  temperature: true     # 是否按 probes.<id>.temperature 注入温度；false 时在请求体中省略
   context_window: 131072  # 实际可用上下文窗口；0 或省略表示不限制档位
 ```
 
@@ -177,7 +180,8 @@ capabilities:
 `capabilities` 原样写进 manifest（逐协议），但**不参与 plan_digest**：它是网关接线
 细节。能力声明的效果（哪些档位被裁、流式份额折算到哪里）体现在 manifest 的
 `sampling` / `skipped` 段，比较时两侧对不上只出 NOTE，不拒绝 —— 同一套实验在不同
-能力声明的网关上仍然可比。
+能力声明的网关上仍然可比。`temperature=false` 只抑制请求体中的温度字段，不改写
+`probes.<id>.temperature` 或 digest，因此锁温端点与可调温端点可以共用标准温度计划。
 
 `capabilities` 可省略，缺省为 `{stream: true, tools: true, thinking: true,
 context_window: 0}`（`context_window: 0` 表示不按窗口裁档位）。

@@ -13,15 +13,15 @@ func TestCapabilitiesJSONDistinguishesMissingFromExplicitFalse(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{}`), &defaults); err != nil {
 		t.Fatal(err)
 	}
-	if !defaults.Present || !defaults.Stream || !defaults.Tools || !defaults.Thinking {
+	if !defaults.Present || !defaults.Stream || !defaults.Tools || !defaults.Thinking || !defaults.Temperature {
 		t.Errorf("空对象应应用缺省能力并标记 Present: %+v", defaults)
 	}
 
 	var disabled config.Capabilities
-	if err := json.Unmarshal([]byte(`{"stream":false,"tools":false,"thinking":false,"context_window":0}`), &disabled); err != nil {
+	if err := json.Unmarshal([]byte(`{"stream":false,"tools":false,"thinking":false,"temperature":false,"context_window":0}`), &disabled); err != nil {
 		t.Fatal(err)
 	}
-	if !disabled.Present || disabled.Stream || disabled.Tools || disabled.Thinking {
+	if !disabled.Present || disabled.Stream || disabled.Tools || disabled.Thinking || disabled.Temperature {
 		t.Errorf("显式全 false 不应被翻转成缺省 true: %+v", disabled)
 	}
 }

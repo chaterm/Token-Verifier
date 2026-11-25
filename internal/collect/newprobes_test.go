@@ -140,7 +140,7 @@ func probeConfig(t *testing.T, baseURL, suitePath string) *config.File {
 			Protocols: []config.ProtocolConfig{
 				{ID: "openai-chat", Weight: 1.0,
 					Transport:    config.TransportMix{Stream: 0.0, NonStream: 1.0},
-					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true},
+					Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true},
 					Thinking: config.ThinkingBlock{
 						Disabled: config.ThinkingMode{BodyOverrides: map[string]any{}},
 						Enabled: config.ThinkingMode{
@@ -364,7 +364,7 @@ func TestThinkEffortAnthropicCharsUnit(t *testing.T) {
 	cfg.Target.Protocols = []config.ProtocolConfig{
 		{ID: "anthropic-messages", Weight: 1.0,
 			Transport:    config.TransportMix{Stream: 0.0, NonStream: 1.0},
-			Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true},
+			Capabilities: config.Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true},
 			Thinking: config.ThinkingBlock{
 				Disabled: config.ThinkingMode{BodyOverrides: map[string]any{}},
 				Enabled: config.ThinkingMode{

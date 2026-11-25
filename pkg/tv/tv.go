@@ -197,7 +197,7 @@ func BuildPlanSummary(cfg *ConfigFile, st *SuiteFile) (*PlanSummary, error) {
 		cp.Target.Protocols = []ProtocolConfig{{
 			ID:           "openai-chat",
 			Weight:       1,
-			Capabilities: Capabilities{Stream: true, Tools: true, Thinking: true, Present: true},
+			Capabilities: Capabilities{Stream: true, Tools: true, Thinking: true, Temperature: true, Present: true},
 			Transport:    TransportMix{Stream: 0.5, NonStream: 0.5},
 			Thinking: ThinkingBlock{
 				Disabled: ThinkingMode{BodyOverrides: map[string]any{}},

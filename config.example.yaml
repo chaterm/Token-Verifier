@@ -30,7 +30,7 @@ target:
     - id: openai-chat
       path: /v1/chat/completions
       weight: 1
-      capabilities: { stream: true, tools: true, thinking: true, context_window: 128000 }
+      capabilities: { stream: true, tools: true, thinking: true, temperature: true, context_window: 128000 }
       transport: { stream: 0.5, non_stream: 0.5 }
       thinking:
         disabled:
@@ -49,7 +49,7 @@ target:
     - id: anthropic-messages
       path: /v1/messages
       weight: 1
-      capabilities: { stream: true, tools: true, thinking: true, context_window: 200000 }
+      capabilities: { stream: true, tools: true, thinking: true, temperature: true, context_window: 200000 }
       transport: { stream: 1.0, non_stream: 0.0 }
       thinking:
         disabled:
@@ -70,7 +70,7 @@ target:
     - id: openai-responses
       path: /v1/responses
       weight: 1
-      capabilities: { stream: true, tools: true, thinking: true, context_window: 128000 }
+      capabilities: { stream: true, tools: true, thinking: true, temperature: true, context_window: 128000 }
       transport: { stream: 0.5, non_stream: 0.5 }
       thinking:
         disabled:
@@ -156,7 +156,7 @@ probes:
   numrandom:
     enabled: false            # 按需开启：12 题 × 2 repeats = 24 请求/次
     repeats: 2                # 单响应含 ~300 整数；repeats=2 兼顾稳健性与 Split-Half 标定
-    # temperature / top_p 留空即 null（锁温推理型号不传温度）
+    temperature: 1.0           # 分布采样温度；端点 capabilities.temperature=false 时自动省略
     # max_tokens 建议留空（不可关思考的推理模型若设上限易截断序列）
     context_buckets: [0]
     min_n: 1                  # 单位为「单侧有效响应序列条数」，缺省 1
