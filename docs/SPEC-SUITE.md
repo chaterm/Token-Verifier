@@ -225,6 +225,10 @@ probes:
 
 这样公开 suite 或公开 rawData 都不会泄露标记内容，被测端点无法预知。
 
+## 5.1 numrandom 的值域与目标长度
+
+`probes.numrandom` 强制 `normalize: none`（不触发 `output_contract`）。值域闭区间可在探针级通过 `min_value` / `max_value` 声明（缺省 `1` / `355`），题目级可选覆盖；每道题必须声明 `target_count`（`[20, 4096]`）。生效的 `(min_value, max_value, target_count)` 随 `numrandom_items` 进入 `plan_digest`。
+
 ## 6. 编写与使用 suite 的流程
 
 1. 从零编写，或从官方发布的 suite 文件复制作为起点

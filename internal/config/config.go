@@ -531,6 +531,7 @@ var DefaultMinN = map[string]int{
 	"needle":       1,
 	"think-effort": 5,
 	"toolcall":     5,
+	"numrandom":    1,
 }
 
 // MinNOf 返回探针的生效 min_n：配置了取配置值，否则取 DefaultMinN，

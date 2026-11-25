@@ -7,7 +7,7 @@
 //	             plan 层：suite_version / padding_algo_version /
 //	                     padding_seed / normalize / output_contract
 //	             探针层：probe_version / observation_schema / normalize_rule /
-//	                     cell_key / question_ids /
+//	                     cell_key / question_ids / numrandom_items /
 //	                     temperature / top_p / max_tokens / thinking_effort
 //	intersect —— context_buckets：按两侧声明的档位取交集；无交集则该探针剔除
 //	relaxed   —— repeats：取两侧较小值，cell 内按 repeat_index 降采样对齐
@@ -296,7 +296,34 @@ func strictProbeDiffs(id string, pa, pb *rawdata.ProbePlan) []FieldDiff {
 	if !strPtrEqual(pa.ThinkingEffort, pb.ThinkingEffort) {
 		add("thinking_effort", displayPtr(pa.ThinkingEffort), displayPtr(pb.ThinkingEffort))
 	}
+	if !numRandomItemsEqual(pa.NumRandomItems, pb.NumRandomItems) {
+		add("numrandom_items", displayNumRandomItems(pa.NumRandomItems), displayNumRandomItems(pb.NumRandomItems))
+	}
 	return diffs
+}
+
+func numRandomItemsEqual(a, b map[string]rawdata.NumRandomItemSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || va != vb {
+			return false
+		}
+	}
+	return true
+}
+
+func displayNumRandomItems(m map[string]rawdata.NumRandomItemSpec) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Sprintf("%v", m)
+	}
+	return string(b)
 }
 
 // displayPtr 渲染指针字段：nil 显示 null（与 canonical JSON 的显式 null 一致 ——

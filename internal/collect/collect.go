@@ -222,7 +222,7 @@ func Run(ctx context.Context, cfg *config.File, st *suite.File, opts Options) (*
 		if tr.ErrorKind == "" {
 			// Observe 前移：观测值在采集期提取，digest 档不落原文也能算全部统计
 			obs, oerr := observeFor(t.probeID, tr.Response, t.norm, t.normalizeRule, t.contractField,
-				t.needleMarkers, t.toolNames, t.reasoningUnit)
+				t.needleMarkers, t.toolNames, t.reasoningUnit, t.numRandomSpec)
 			if oerr != nil {
 				rec.Status = "error"
 				kind := "parse"
@@ -373,6 +373,8 @@ type task struct {
 	toolNames []string
 	// think-effort：该协议的思考量观测单位（adapter.ReasoningUnit）
 	reasoningUnit string
+	// numrandom：题目生效值域与目标序列长度
+	numRandomSpec suite.NumRandomSpec
 }
 
 // expandTasks 按 探针×题目×档位 展开 cell，逐 cell 分配并生成任务。
@@ -423,6 +425,10 @@ func expandTasks(cfg *config.File, st *suite.File, cp *plan.CollectionPlan, norm
 					})
 					toolNames = append(toolNames, t.Name)
 				}
+			}
+			var nrSpec suite.NumRandomSpec
+			if probeID == "numrandom" {
+				nrSpec = ps.NumRandomSpecOf(item)
 			}
 			effort := ps.ThinkingEffortOf(item)
 			for _, bucket := range pp.ContextBuckets {
@@ -483,6 +489,7 @@ func expandTasks(cfg *config.File, st *suite.File, cp *plan.CollectionPlan, norm
 							adapter:       ad, logical: lr, thinking: tb,
 							needleMarkers: needleMarkers, toolNames: toolNames,
 							reasoningUnit: adapter.ReasoningUnit(protoID),
+							numRandomSpec: nrSpec,
 						})
 					}
 				}

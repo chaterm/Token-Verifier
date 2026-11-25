@@ -247,18 +247,22 @@ func TestObserveToolCall(t *testing.T) {
 func TestObserveForDispatch(t *testing.T) {
 	norm := testNormalizer()
 	if _, err := observeFor("needle", adapter.Response{Content: "NEEDLE-ABC23456"}, norm, "none", "",
-		[]string{"NEEDLE-ABC23456"}, nil, ""); err != nil {
+		[]string{"NEEDLE-ABC23456"}, nil, "", suite.NumRandomSpec{}); err != nil {
 		t.Errorf("needle 分派失败: %v", err)
 	}
 	if _, err := observeFor("think-effort", adapter.Response{Usage: adapter.Usage{Reasoning: 10}}, norm, "none", "",
-		nil, nil, "tokens"); err != nil {
+		nil, nil, "tokens", suite.NumRandomSpec{}); err != nil {
 		t.Errorf("think-effort 分派失败: %v", err)
 	}
 	if _, err := observeFor("toolcall", adapter.Response{ToolCalls: []adapter.ToolCall{
-		{Name: "t", Args: json.RawMessage(`{}`)}}}, norm, "none", "", nil, []string{"t"}, ""); err != nil {
+		{Name: "t", Args: json.RawMessage(`{}`)}}}, norm, "none", "", nil, []string{"t"}, "", suite.NumRandomSpec{}); err != nil {
 		t.Errorf("toolcall 分派失败: %v", err)
 	}
-	if _, err := observeFor("future", adapter.Response{}, norm, "none", "", nil, nil, ""); err == nil {
+	if _, err := observeFor("numrandom", adapter.Response{Content: "[" + buildIntCSV(100) + "]"}, norm, "none", "",
+		nil, nil, "", suite.NumRandomSpec{MinValue: 1, MaxValue: 355, TargetCount: 100}); err != nil {
+		t.Errorf("numrandom 分派失败: %v", err)
+	}
+	if _, err := observeFor("future", adapter.Response{}, norm, "none", "", nil, nil, "", suite.NumRandomSpec{}); err == nil {
 		t.Error("未实现探针应报错")
 	}
 }

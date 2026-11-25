@@ -1,5 +1,5 @@
-// Package probe 定义探针插件契约，并实现五个探针：
-// onetoken / tokenizer / needle / think-effort / toolcall。
+// Package probe 定义探针插件契约，并实现六个探针：
+// onetoken / tokenizer / needle / think-effort / toolcall / numrandom。
 // 探针只做统计判定，不读文件、不发请求；采集侧的观测提取在 collect 包的 observeFor。
 package probe
 
@@ -93,6 +93,7 @@ var registry = map[string]Probe{
 	"needle":       needleProbe{},
 	"think-effort": thinkEffortProbe{},
 	"toolcall":     toolcallProbe{},
+	"numrandom":    numrandomProbe{},
 }
 
 // Get 按 ID 查探针；未实现的返回 false。

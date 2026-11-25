@@ -68,9 +68,19 @@ type NormalizeSpace struct {
 type ProbeSet struct {
 	Normalize      string  `yaml:"normalize"`
 	ThinkingEffort *string `yaml:"thinking_effort"`
+	// MinValue / MaxValue 整数随机序列探针的值域缺省闭区间（仅 numrandom；缺省 [1, 355]）。
+	MinValue int `yaml:"min_value"`
+	MaxValue int `yaml:"max_value"`
 	// Tools 探针级工具集（仅 toolcall）；题目级 tools 覆盖它。
 	Tools []Tool `yaml:"tools"`
 	Items []Item `yaml:"items"`
+}
+
+// NumRandomSpec 单道 numrandom 题目的生效值域与目标序列长度。
+type NumRandomSpec struct {
+	MinValue    int `json:"min_value"`
+	MaxValue    int `json:"max_value"`
+	TargetCount int `json:"target_count"`
 }
 
 // Tool 一个虚构工具的定义（SPEC-SUITE）。Parameters 是 JSON schema。
@@ -89,10 +99,37 @@ type Item struct {
 	// NeedlePositions 埋点相对位置列表（仅 needle，∈(0,1)）。
 	// 一个位置 = 一个埋点 = 比较侧一个统计单元；缺省 [0.5]。
 	NeedlePositions []float64 `yaml:"needle_positions"`
+	// MinValue / MaxValue / TargetCount 数字序列探针题目级参数（仅 numrandom）。
+	MinValue    int `yaml:"min_value"`
+	MaxValue    int `yaml:"max_value"`
+	TargetCount int `yaml:"target_count"`
 	// Tools 题目级工具集覆盖（仅 toolcall）；nil = 继承探针级。
 	Tools []Tool `yaml:"tools"`
 	// ExpectParallel 标注该题期望并行调用（仅 toolcall，进报告不进判定）。
 	ExpectParallel bool `yaml:"expect_parallel"`
+}
+
+// NumRandomSpecOf 解析 numrandom 题目生效的值域与目标长度（题目级 > 探针级 > [1, 355]）。
+func (s ProbeSet) NumRandomSpecOf(it Item) NumRandomSpec {
+	minV := s.MinValue
+	if it.MinValue != 0 {
+		minV = it.MinValue
+	}
+	if minV == 0 {
+		minV = 1
+	}
+	maxV := s.MaxValue
+	if it.MaxValue != 0 {
+		maxV = it.MaxValue
+	}
+	if maxV == 0 {
+		maxV = 355
+	}
+	return NumRandomSpec{
+		MinValue:    minV,
+		MaxValue:    maxV,
+		TargetCount: it.TargetCount,
+	}
 }
 
 // PositionsOf 解析该题实际生效的埋点位置（升序钳制；缺省 [0.5]）。
@@ -272,6 +309,22 @@ func (f *File) Validate() error {
 			}
 			if err := validateTools(pid, it.ID, it.Tools); err != nil {
 				return err
+			}
+			if pid == "numrandom" {
+				if n != "" && n != "none" {
+					return fmt.Errorf("probes.numrandom.items[%s].normalize: 必须为 none（数字序列探针直接解析整数游程，禁止注入 JSON 输出契约）", it.ID)
+				}
+				spec := ps.NumRandomSpecOf(it)
+				if spec.MinValue < 1 {
+					return fmt.Errorf("probes.numrandom.items[%s].min_value: 必须 ≥ 1，收到 %d", it.ID, spec.MinValue)
+				}
+				width := spec.MaxValue - spec.MinValue + 1
+				if spec.MaxValue <= spec.MinValue || width < 16 || width > 4096 {
+					return fmt.Errorf("probes.numrandom.items[%s].max_value: 闭区间 [%d, %d] 跨度必须在 [16, 4096] 之间", it.ID, spec.MinValue, spec.MaxValue)
+				}
+				if spec.TargetCount < 20 || spec.TargetCount > 4096 {
+					return fmt.Errorf("probes.numrandom.items[%s].target_count: 必须在 [20, 4096] 之间，收到 %d", it.ID, spec.TargetCount)
+				}
 			}
 		}
 	}

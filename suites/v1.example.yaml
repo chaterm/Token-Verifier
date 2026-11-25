@@ -1,5 +1,5 @@
 # 示例题库 v1（suites/v1.example.yaml）
-# 覆盖全部五个探针：onetoken / tokenizer / needle / think-effort / toolcall，
+# 覆盖全部六个探针：onetoken / tokenizer / needle / think-effort / toolcall / numrandom，
 # 每个探针只留最少量的示例题目，演示题库的全部配置项。
 #
 # 规则（docs/SPEC-SUITE.md）：
@@ -160,3 +160,25 @@ probes:
         expect_parallel: true
       - id: tc.example.003
         prompt: "把 72 华氏度换算成摄氏度。"
+
+  # numrandom：数字随机序列指纹（docs/PROBES.md）。
+  # 让模型凭第一直觉输出约 300 个闭区间 [min_value, max_value] 内的整数，
+  # 单次请求即可获得高密度样本；比较侧按 Jeffreys (α=0.5) 平滑 Hellinger
+  # 综合评估边际值分布 (0.75) + 4×16 有序位置分块 (0.125) + 末位数字 (0.125)。
+  # 约束要点：
+  #   - normalize 必须为 none（不注入 JSON 输出契约 system prompt）
+  #   - 题干必须明确「允许自然重复、禁止去重/排序/回改」，且不要求“均匀覆盖”，
+  #     避免不放回采样抹平模型固有数值偏好
+  numrandom:
+    normalize: none
+    thinking_effort: null
+    min_value: 1
+    max_value: 355
+    items:
+      - id: nr.example.001
+        target_count: 292
+        prompt: "请不要使用任何工具、代码或计算器，完全凭第一直觉依次写出 292 个 1 到 355（含边界）之间的阿拉伯十进制整数。不要从 1 计数，不要排序，不要使用单调、等差、循环或人为构造的规律；允许自然偶发重复，不要去重，也不要回头修改已经写出的数字。请只输出一个合法的紧凑 JSON 整数数组（如 [17, 241, ...]），不要附加任何解释或 Markdown 代码块。"
+      - id: nr.example.002
+        target_count: 311
+        prompt: "Without using any tools, code, or calculators, pick 311 base-10 integers between 1 and 355 inclusive, one position at a time by immediate first instinct. Do not count, sort, or use monotonic, arithmetic, cyclic, or constructed patterns. Accidental duplicates are permitted; do not deduplicate or edit numbers once written. Output only one compact JSON array of integers with no markdown fences or explanation."
+

@@ -280,6 +280,13 @@ type CollectionPlan struct {
 	Probes             map[string]ProbePlan `json:"probes"`
 }
 
+// NumRandomItemSpec numrandom 单道题目的值域与目标长度镜像（进 digest / strict 比对）。
+type NumRandomItemSpec struct {
+	MinValue    int `json:"min_value"`
+	MaxValue    int `json:"max_value"`
+	TargetCount int `json:"target_count"`
+}
+
 // ProbePlan 单探针的采集计划。
 type ProbePlan struct {
 	ProbeVersion      string   `json:"probe_version"`
@@ -295,4 +302,6 @@ type ProbePlan struct {
 	QuestionIDs       []string `json:"question_ids"`
 	// MinN 生效的单侧样本下限。旧文件无该字段 → 0，比较侧回退探针默认。
 	MinN int `json:"min_n"`
+	// NumRandomItems 仅 numrandom 填充（omitempty 保证既有探针 digest 零变化）。
+	NumRandomItems map[string]NumRandomItemSpec `json:"numrandom_items,omitempty"`
 }

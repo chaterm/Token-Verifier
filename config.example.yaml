@@ -153,6 +153,14 @@ probes:
     context_buckets: [0]
     min_n: 5                  # 可选，缺省 5
 
+  numrandom:
+    enabled: false            # 按需开启：12 题 × 2 repeats = 24 请求/次
+    repeats: 2                # 单响应含 ~300 整数；repeats=2 兼顾稳健性与 Split-Half 标定
+    # temperature / top_p 留空即 null（锁温推理型号不传温度）
+    # max_tokens 建议留空（不可关思考的推理模型若设上限易截断序列）
+    context_buckets: [0]
+    min_n: 1                  # 单位为「单侧有效响应序列条数」，缺省 1
+
 # ── 比较判据（compare / run 必填；工具不提供默认值，不进 digest）────────
 # 支持档位级覆盖：<probe>.<bucket> 只对该 context_bucket 生效，
 # 档位必须出现在对应探针的 context_buckets 中，否则报错。
@@ -165,6 +173,7 @@ thresholds:
   needle: 0.01                # 召回率差异 2×2 卡方的 alpha
   think-effort: 0.01          # Mann-Whitney U + Fisher 合并 p 值的 alpha
   toolcall: 0.05              # 双分量共用：JSD 均值上限 + 合法率卡方 alpha
+  numrandom: 0.15             # 池化平滑 Hellinger 距离上限（须按模型实测标定）
 
 # ── 运行时参数（全部不进 digest）────────────────────────────────────────
 runtime:

@@ -78,6 +78,9 @@ type ProbePlan struct {
 	// thresholds 同类，严格/子集模式一致）。代价是 digest 一致不再蕴含
 	// 判定参数一致 —— 不带 -c 比较时行为可复现，带 -c 时以使用者的判据为准。
 	MinN int `json:"min_n"`
+	// NumRandomItems 仅 numrandom 探针填充（题号 → 值域与目标长度）。
+	// 必须保留 omitempty，确保既有五探针 canonical JSON 与 plan_digest 字节不变。
+	NumRandomItems map[string]suite.NumRandomSpec `json:"numrandom_items,omitempty"`
 }
 
 // probeSpecs 之后是探针计划块。协议的 capabilities / thinking 与 request
@@ -122,6 +125,13 @@ func Build(cfg *config.File, st *suite.File) (*CollectionPlan, error) {
 		sort.Strings(qids)
 		allQIDs = append(allQIDs, qids...)
 
+		var nrItems map[string]suite.NumRandomSpec
+		if id == "numrandom" {
+			nrItems = make(map[string]suite.NumRandomSpec, len(ps.Items))
+			for _, it := range ps.Items {
+				nrItems[it.ID] = ps.NumRandomSpecOf(it)
+			}
+		}
 		norm := ps.Normalize
 		cp.Probes[id] = ProbePlan{
 			ProbeVersion:      meta.Version,
@@ -136,6 +146,7 @@ func Build(cfg *config.File, st *suite.File) (*CollectionPlan, error) {
 			CellKey:           meta.CellKey,
 			QuestionIDs:       qids,
 			MinN:              pc.MinNOf(id, meta.MinN),
+			NumRandomItems:    nrItems,
 		}
 	}
 	sort.Strings(allQIDs)

@@ -65,6 +65,7 @@ type (
 	RawTransport        = rawdata.Transport
 	RawCollectionPlan   = rawdata.CollectionPlan
 	RawProbePlan        = rawdata.ProbePlan
+	NumRandomItemSpec   = rawdata.NumRandomItemSpec
 
 	Probe         = probe.Probe
 	ProbeMeta     = probe.ProbeMeta
@@ -108,7 +109,7 @@ var (
 
 // AllProbeIDs 返回当前引擎支持的全部标准探针 ID（固定排序）。
 func AllProbeIDs() []string {
-	return []string{"onetoken", "tokenizer", "needle", "think-effort", "toolcall"}
+	return []string{"onetoken", "tokenizer", "needle", "think-effort", "toolcall", "numrandom"}
 }
 
 // GetProbe 按 ID 查询探针实现。
@@ -390,10 +391,11 @@ func Compare(a, b *RawDataFile, thresholds map[string]float64, cfg *ConfigFile, 
 
 // 统计原语转出，保证上层 ROC/标定与底层探针算法绝对一致。
 var (
-	JSD             = stats.JSD
-	FromSamples     = stats.FromSamples
-	Chi2Homogeneity = stats.Chi2Homogeneity
-	MannWhitneyU    = stats.MannWhitneyU
-	FisherCombine   = stats.FisherCombine
-	JointHist       = stats.JointHist
+	JSD               = stats.JSD
+	FromSamples       = stats.FromSamples
+	HellingerSmoothed = stats.HellingerSmoothed
+	Chi2Homogeneity   = stats.Chi2Homogeneity
+	MannWhitneyU      = stats.MannWhitneyU
+	FisherCombine     = stats.FisherCombine
+	JointHist         = stats.JointHist
 )

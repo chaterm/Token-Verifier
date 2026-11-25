@@ -199,6 +199,7 @@ gzip 压缩的 NDJSON。三段式，每行一个 JSON 对象，用 `kind` 区分
 | `observation_schema` | 观测结构不同，字段无法对齐 |
 | `cell_key` | 分组粒度不同，配对方式不同 |
 | `question_ids` | 题目子集不同 |
+| `numrandom_items` | 仅 `numrandom` 填充（`omitempty`）：每题的 `min_value`/`max_value`/`target_count` 进 digest，值域或目标长度不同则分布不可比 |
 
 `question_set_digest` 在 `--allow-subset` 下不参与 strict 比对：它是派生字段
 （全部启用探针 `question_ids` 并集的哈希），两侧启用探针集合不同时必然不等，

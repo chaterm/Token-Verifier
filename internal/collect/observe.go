@@ -6,7 +6,10 @@ package collect
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/chaterm/token-verifier/internal/adapter"
@@ -133,11 +136,105 @@ func ObserveToolCall(resp adapter.Response, toolNames []string) (json.RawMessage
 	return b, nil
 }
 
+// ObserveNumrandom 提取数字随机序列探针观测：按字母断链提取最长合法整数游程，
+// 校验有效数量达到 min(targetCount, max(80, ceil(0.55*targetCount))) 后落盘自描述结构。
+func ObserveNumrandom(resp adapter.Response, minVal, maxVal, targetCount int) (json.RawMessage, error) {
+	if minVal < 1 || maxVal <= minVal || targetCount < 1 {
+		return nil, fmt.Errorf("numrandom 参数非法: range=[%d,%d] target=%d", minVal, maxVal, targetCount)
+	}
+	values := extractNumRandomSequence(resp.Content, minVal, maxVal)
+	minValid := int(math.Ceil(0.55 * float64(targetCount)))
+	if minValid < 80 {
+		minValid = 80
+	}
+	if minValid > targetCount {
+		minValid = targetCount
+	}
+	if len(values) < minValid {
+		return nil, fmt.Errorf("有效整数序列长度不足：提取到 %d 个 [%d,%d] 整数，最低要求 %d（target=%d）",
+			len(values), minVal, maxVal, minValid, targetCount)
+	}
+	obs := map[string]any{
+		"values":       values,
+		"min_value":    minVal,
+		"max_value":    maxVal,
+		"target_count": targetCount,
+	}
+	return json.Marshal(obs)
+}
+
+// extractNumRandomSequence 单趟扫描文本提取 [minVal, maxVal] 内的最长连续 ASCII 十进制正整数游程：
+//   - 任何 Unicode 字母（如说明文字、Markdown `json` 围栏标签）切断当前游程；
+//   - 负数（-12）、小数（3.14）、全角/非 ASCII 数字（１２）整体跳过，不拆成伪正整数；
+//   - 越界整数跳过但不切断游程，返回最长一段游程。
+func extractNumRandomSequence(s string, minVal, maxVal int) []int {
+	runes := []rune(s)
+	var best, cur []int
+	flush := func() {
+		if len(cur) > len(best) {
+			best = cur
+		}
+		cur = nil
+	}
+
+	isASCIIDigit := func(r rune) bool { return r >= '0' && r <= '9' }
+	isOtherDigit := func(r rune) bool { return !isASCIIDigit(r) && unicode.IsDigit(r) }
+
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		if unicode.IsLetter(r) {
+			flush()
+			i++
+			continue
+		}
+		if isOtherDigit(r) {
+			for i < len(runes) && (unicode.IsDigit(runes[i]) || runes[i] == '.') {
+				i++
+			}
+			continue
+		}
+		if isASCIIDigit(r) {
+			negOrAttached := i > 0 && (runes[i-1] == '-' || isOtherDigit(runes[i-1]))
+			start := i
+			for i < len(runes) && isASCIIDigit(runes[i]) {
+				i++
+			}
+			isDecimal := i < len(runes) && runes[i] == '.' && i+1 < len(runes) && isASCIIDigit(runes[i+1])
+			if isDecimal {
+				i++ // skip '.'
+				for i < len(runes) && isASCIIDigit(runes[i]) {
+					i++
+				}
+			}
+			trailingOtherDigit := i < len(runes) && isOtherDigit(runes[i])
+			if trailingOtherDigit {
+				for i < len(runes) && isOtherDigit(runes[i]) {
+					i++
+				}
+			}
+			if i < len(runes) && unicode.IsLetter(runes[i]) {
+				flush()
+				i++
+				continue
+			}
+			if !negOrAttached && !isDecimal && !trailingOtherDigit {
+				if v, err := strconv.Atoi(string(runes[start:i])); err == nil && v >= minVal && v <= maxVal {
+					cur = append(cur, v)
+				}
+			}
+			continue
+		}
+		i++
+	}
+	flush()
+	return best
+}
+
 // observeFor 按探针 id 分派到对应 Observe 函数。jsonField 非空时先做契约解包；
-// needleMarkers / toolNames / reasoningUnit 为对应探针的任务级参数（其余探针忽略）。
+// needleMarkers / toolNames / reasoningUnit / numRandomSpec 为对应探针的任务级参数（其余探针忽略）。
 // 未实现探针的请求不会进入任务队列（collect 层已过滤），这里是兜底。
 func observeFor(probeID string, resp adapter.Response, norm *suite.Normalizer, normalizeRule, jsonField string,
-	needleMarkers, toolNames []string, reasoningUnit string) (json.RawMessage, error) {
+	needleMarkers, toolNames []string, reasoningUnit string, numRandomSpec suite.NumRandomSpec) (json.RawMessage, error) {
 	switch probeID {
 	case "onetoken":
 		return ObserveOnetoken(resp, norm, normalizeRule, jsonField)
@@ -149,6 +246,8 @@ func observeFor(probeID string, resp adapter.Response, norm *suite.Normalizer, n
 		return ObserveThinkEffort(resp, reasoningUnit)
 	case "toolcall":
 		return ObserveToolCall(resp, toolNames)
+	case "numrandom":
+		return ObserveNumrandom(resp, numRandomSpec.MinValue, numRandomSpec.MaxValue, numRandomSpec.TargetCount)
 	default:
 		return nil, fmt.Errorf("探针 %q 的 Observe 未实现", probeID)
 	}

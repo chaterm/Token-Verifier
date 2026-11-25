@@ -107,6 +107,8 @@ func statisticText(probeID string, statistic *float64) string {
 	switch probeID {
 	case "onetoken":
 		return trimFloat(*statistic) + " JSD"
+	case "numrandom":
+		return trimFloat(*statistic) + " H"
 	}
 	return trimFloat(*statistic)
 }
@@ -159,8 +161,12 @@ func worstCell(v probe.Verdict) *string {
 		return nil
 	}
 	c := v.Cells[worst]
-	s := fmt.Sprintf("%s: jsd %s, n %d vs %d",
-		cellKeyText(c), trimFloat(*c.Stat), c.NA, c.NB)
+	metric := "jsd"
+	if v.ProbeID == "numrandom" {
+		metric = "hellinger"
+	}
+	s := fmt.Sprintf("%s: %s %s, n %d vs %d",
+		cellKeyText(c), metric, trimFloat(*c.Stat), c.NA, c.NB)
 	return &s
 }
 
