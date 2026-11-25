@@ -71,6 +71,32 @@ func TestObserveNumRandomParsingAndCoverage(t *testing.T) {
 	}
 }
 
+func TestObserveNumRandomTruncatesToTargetCount(t *testing.T) {
+	// 模型未按 target_count 停止、持续失控生成（线上实测单响应可写出 6 万+整数）：
+	// 观测必须只保留前 target_count 个整数，且保留顺序与原始前缀一致。
+	seq := buildIntCSV(600)
+	raw, err := ObserveNumrandom(adapter.Response{Content: "[" + seq + "]"}, 1, 355, 292)
+	if err != nil {
+		t.Fatalf("超长序列应被截断而不是报错: %v", err)
+	}
+	var parsed struct {
+		Values []int `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Values) != 292 {
+		t.Fatalf("len(values) = %d, want 292（应按 target_count 截断）", len(parsed.Values))
+	}
+	// 校验前缀逐位一致（buildIntCSV 为确定性序列，取前 292 个）
+	for i := 0; i < 292; i++ {
+		expected := 1 + (i*37)%355
+		if parsed.Values[i] != expected {
+			t.Fatalf("values[%d] = %d, want %d（截断应保留原始前缀顺序）", i, parsed.Values[i], expected)
+		}
+	}
+}
+
 func TestCollectNumRandomNoSystemContractAndNullTemp(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any

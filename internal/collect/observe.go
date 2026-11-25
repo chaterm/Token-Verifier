@@ -137,12 +137,16 @@ func ObserveToolCall(resp adapter.Response, toolNames []string) (json.RawMessage
 }
 
 // ObserveNumrandom 提取数字随机序列探针观测：按字母断链提取最长合法整数游程，
-// 校验有效数量达到 min(targetCount, max(80, ceil(0.55*targetCount))) 后落盘自描述结构。
+// 按 targetCount 截断保留前 N 个整数（模型未按数量停止时丢弃后续失控生成），
+// 再校验有效数量达到 min(targetCount, max(80, ceil(0.55*targetCount))) 后落盘自描述结构。
 func ObserveNumrandom(resp adapter.Response, minVal, maxVal, targetCount int) (json.RawMessage, error) {
 	if minVal < 1 || maxVal <= minVal || targetCount < 1 {
 		return nil, fmt.Errorf("numrandom 参数非法: range=[%d,%d] target=%d", minVal, maxVal, targetCount)
 	}
 	values := extractNumRandomSequence(resp.Content, minVal, maxVal)
+	if len(values) > targetCount {
+		values = values[:targetCount]
+	}
 	minValid := int(math.Ceil(0.55 * float64(targetCount)))
 	if minValid < 80 {
 		minValid = 80

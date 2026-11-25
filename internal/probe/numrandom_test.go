@@ -143,3 +143,32 @@ func TestNumRandomCoverageGateAndOrderInvariance(t *testing.T) {
 		t.Fatalf("值域不一致应判 inconclusive: %+v", vMismatch)
 	}
 }
+
+func TestNumRandomRunawayLegacySequenceCapped(t *testing.T) {
+	p, ok := Get("numrandom")
+	if !ok {
+		t.Fatal("numrandom 未注册")
+	}
+	// 模拟线上真实事故：B 侧前 300 个整数与 A 完全一致，但随后失控多写出 2 万个整数。
+	// 比较端必须按 target_count=300 截断，否则失控尾部会把分布距离放大成假阳性。
+	normal := synthSeq(7, 37, 300, 1, 355)
+	runaway := append([]int{}, normal...)
+	for i := 0; i < 20000; i++ {
+		runaway = append(runaway, 1+(i%355))
+	}
+	cells := []CellPair{{
+		Key: map[string]string{"question_id": "nr.1", "context_bucket": "0"},
+		A:   []Observation{makeNumRandomObs(normal, 1, 355, 300)},
+		B:   []Observation{makeNumRandomObs(runaway, 1, 355, 300)},
+	}}
+	v := p.Compare(cells, 0.15, 1)
+	if v.Verdict != "pass" || v.Statistic == nil || *v.Statistic != 0 {
+		t.Fatalf("失控生成应按 target_count 截断并判 pass(0): %+v", v)
+	}
+	if got := v.Cells[0].Extra["a_total_ints"]; got != 300 {
+		t.Errorf("a_total_ints = %v, want 300", got)
+	}
+	if got := v.Cells[0].Extra["b_total_ints"]; got != 300 {
+		t.Errorf("b_total_ints = %v, want 300（失控尾部应被截断）", got)
+	}
+}

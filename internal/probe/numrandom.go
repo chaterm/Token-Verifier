@@ -206,7 +206,13 @@ func buildCellProfile(obs []numrandomObs, minVal, maxVal int) (*stats.NumRandomP
 	prof := stats.NewNumRandomProfile(minVal, maxVal)
 	targetSum := 0
 	for _, o := range obs {
-		if !prof.AddSequence(o.Values) {
+		// 按 target_count 截断：采集端已截断的新观测是恒等操作；
+		// 对采集端未截断的历史 rawdata 在此兜底，保证旧数据重算与新生成语义一致。
+		values := o.Values
+		if o.TargetCount > 0 && len(values) > o.TargetCount {
+			values = values[:o.TargetCount]
+		}
+		if !prof.AddSequence(values) {
 			return nil, 0, false
 		}
 		if o.TargetCount > 0 {

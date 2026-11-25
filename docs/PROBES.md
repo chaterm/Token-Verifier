@@ -257,6 +257,8 @@ JSON 报告里 `statistic` 只承载 JSD 均值分量，`ratio` 取两分量的�
 
 **观测与解析**：`normalize` 强制为 `none`（不注入 `output_contract` system prompt）。观测端按 Unicode 字母断链提取最长连续 `[min_value, max_value]` ASCII 十进制整数游程（自动跳过负数、小数、全角数字与越界数），单条响应有效长度须达到 `min(target_count, max(80, ceil(0.55 * target_count)))`，否则记 `parse` 错误。
 
+**按 `target_count` 截断**：模型可能不按声明数量停止（实测有端点持续写出 6 万+整数直至输出上限）。采集端与比较端均只保留每条响应的**前 `target_count` 个整数**，丢弃后续失控生成，保证每条响应的样本量与 `target_count` 一致；比较端的截断同时兼容早期未截断采集的 rawdata（旧文件重算即自动修正，无需重新采集）。
+
 **统计**：在 Jeffreys 平滑（$\alpha = 0.5$）下计算三子空间 Hellinger 距离：
 - 边际值分布（$W$ 维，权重 0.75）
 - 有序位置分块（序列四等分 × 16 均匀值域桶，权重 0.125）
