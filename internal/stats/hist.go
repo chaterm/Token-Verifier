@@ -28,7 +28,14 @@ func JointHist(a, b []float64, bins int) Hist {
 	if len(a) == 0 && len(b) == 0 {
 		return Hist{}
 	}
-	lo, hi := a[0], a[0]
+	// 允许单侧为空：Split-Half 等场景下，repeats=1 的探针无法构造同源自比对，
+	// genuine 为空而 impostor 非空（或反之）也必须能渲染直方图，不能越界 panic。
+	var lo, hi float64
+	if len(a) > 0 {
+		lo, hi = a[0], a[0]
+	} else {
+		lo, hi = b[0], b[0]
+	}
 	for _, x := range a {
 		if x < lo {
 			lo = x
