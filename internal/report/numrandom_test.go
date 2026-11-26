@@ -25,18 +25,20 @@ func TestStdoutAndVerboseNumRandomLabels(t *testing.T) {
 			Threshold:       0.15,
 			ThresholdSource: "config",
 			Ratio:           &r,
-			Note:            "pooled H=0.3215",
+			Note:            "pooled U-Cos=0.3215",
 			Cells: []probe.CellDetail{{
 				Key:  map[string]string{"question_id": "nr.v1.en.001", "context_bucket": "0"},
 				NA:   2,
 				NB:   2,
 				Stat: &cellStat,
 				Extra: map[string]any{
-					"value_hellinger":      0.43,
-					"position_hellinger":   0.22,
-					"last_digit_hellinger": 0.11,
-					"a_total_ints":         600,
-					"b_total_ints":         598,
+					"value_dist":      0.43,
+					"prefix_dist":     0.31,
+					"transition_dist": 0.25,
+					"position_dist":   0.22,
+					"last_digit_dist": 0.11,
+					"a_total_ints":    600,
+					"b_total_ints":    598,
 				},
 			}},
 		}},
@@ -45,17 +47,17 @@ func TestStdoutAndVerboseNumRandomLabels(t *testing.T) {
 	var out bytes.Buffer
 	Stdout(&out, res)
 	gotStdout := out.String()
-	if !strings.Contains(gotStdout, "0.3215 H") {
-		t.Errorf("Stdout 缺少 numrandom 的 H 后缀:\n%s", gotStdout)
+	if !strings.Contains(gotStdout, "0.3215 U-Cos") {
+		t.Errorf("Stdout 缺少 numrandom 的 U-Cos 后缀:\n%s", gotStdout)
 	}
-	if !strings.Contains(gotStdout, "hellinger 0.412") || strings.Contains(gotStdout, "jsd 0.412") {
-		t.Errorf("Stdout 最差 cell 标签应为 hellinger 而非 jsd:\n%s", gotStdout)
+	if !strings.Contains(gotStdout, "u-cos 0.412") || strings.Contains(gotStdout, "jsd 0.412") {
+		t.Errorf("Stdout 最差 cell 标签应为 u-cos 而非 jsd:\n%s", gotStdout)
 	}
 
 	var verb bytes.Buffer
 	Verbose(&verb, res)
 	gotVerbose := verb.String()
-	if !strings.Contains(gotVerbose, "hellinger: val=0.43 pos=0.22 dig=0.11  ints: A=600 B=598") {
+	if !strings.Contains(gotVerbose, "u-cos: val=0.43 pre=0.31 tr=0.25 pos=0.22 dig=0.11  ints: A=600 B=598") {
 		t.Errorf("Verbose 缺少 numrandom 紧凑摘要:\n%s", gotVerbose)
 	}
 }

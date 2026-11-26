@@ -153,14 +153,16 @@ func verboseCell(w io.Writer, c probe.CellDetail) {
 		fmt.Fprintf(w, "     recall: A %d/%d (%s)  B %d/%d (%s)\n",
 			ah, at, trimFloat(ar), bh, bt, trimFloat(br))
 	}
-	// numrandom 三子空间 Hellinger 与有效整数数摘要
-	if vh, ok := c.Extra["value_hellinger"].(float64); ok {
-		ph, _ := c.Extra["position_hellinger"].(float64)
-		dh, _ := c.Extra["last_digit_hellinger"].(float64)
+	// numrandom 五子空间 U-Cos 距离与有效整数数摘要
+	if vd, ok := c.Extra["value_dist"].(float64); ok {
+		prd, _ := c.Extra["prefix_dist"].(float64)
+		trd, _ := c.Extra["transition_dist"].(float64)
+		pd, _ := c.Extra["position_dist"].(float64)
+		dd, _ := c.Extra["last_digit_dist"].(float64)
 		ai, _ := c.Extra["a_total_ints"].(int)
 		bi, _ := c.Extra["b_total_ints"].(int)
-		fmt.Fprintf(w, "     hellinger: val=%s pos=%s dig=%s  ints: A=%d B=%d\n",
-			trimFloat(vh), trimFloat(ph), trimFloat(dh), ai, bi)
+		fmt.Fprintf(w, "     u-cos: val=%s pre=%s tr=%s pos=%s dig=%s  ints: A=%d B=%d\n",
+			trimFloat(vd), trimFloat(prd), trimFloat(trd), trimFloat(pd), trimFloat(dd), ai, bi)
 	}
 	// 解析失败提示（任何探针）
 	if pf, ok := c.Extra["parse_failed"].(int); ok && pf > 0 {

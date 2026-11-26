@@ -443,7 +443,7 @@ thresholds:
   needle: 0.01          # 召回率差异 2×2 卡方的 alpha
   think-effort: 0.01    # Mann-Whitney U + Fisher 合并 p 值的 alpha
   toolcall: 0.05        # 双分量共用：JSD 均值上限 + 合法率卡方 alpha
-  numrandom: 0.15       # 池化平滑 Hellinger 距离上限（须标定）
+  numrandom: 0.11       # 池化响应级无偏余弦距离（U-Cos）上限（建议按家族 ROC 重标）
 ```
 
 键有两种形式：`<probe>` 是探针级兜底；`<probe>.<bucket>` 只对某个

@@ -7,15 +7,17 @@ import (
 	"github.com/chaterm/token-verifier/internal/stats"
 )
 
-// numrandomProbe 数字随机序列指纹探针（参考 ModelTrace 统计机理的双样本检验版）：
-// 每次请求收集约 300 个 [min_value, max_value] 整数序列，提取：
-//   - 边际值分布（权重 0.75）
-//   - 4 段 × 16 值域位置分块分布（权重 0.125）
-//   - 末位数字 v % 10 分布（权重 0.125）
+// numrandomProbe 数字随机序列指纹探针（响应级无偏余弦距离 U-Cos 双样本检验）：
+// 每次请求收集约 300 个 [min_value, max_value] 整数序列，提取五子空间：
+//   - 全序列边际值分布（权重 0.45）
+//   - 开篇指数衰减前缀分布 w_i = exp(-5*i/L)（权重 0.20）
+//   - 8×8 相邻值域转移分布（权重 0.15）
+//   - 4 段 × 16 值域位置分块分布（权重 0.10）
+//   - 末位数字 v % 10 分布（权重 0.10）
 //
-// 单格明细记录各自组合平滑 Hellinger 距离供定位异常题目；
-// 探针级统计量对所有达标配对 cell 跨格池化计数后计算全局平滑 Hellinger 距离，
-// 充分利用共享值域样本空间压低高维有限样本偏置。
+// 单格明细记录各自组合距离供定位异常题目；
+// 探针级统计量对所有达标配对 cell 跨格池化后计算响应级无偏余弦距离（U-Cos），
+// 扣除逐响应有限样本方差偏置，消除 repeats=1 巡检与 repeats=2 全量混比时的 K/N 偏置碰撞。
 type numrandomProbe struct{}
 
 const numrandomMinN = 1
@@ -112,13 +114,15 @@ func (p numrandomProbe) Compare(pairs []CellPair, threshold float64, minN int) V
 			covB = float64(profB.TotalInts) / float64(targetSumB)
 		}
 		detail.Extra = mergeExtra(detail.Extra, map[string]any{
-			"value_hellinger":      cellDist.ValueH,
-			"position_hellinger":   cellDist.PositionH,
-			"last_digit_hellinger": cellDist.LastDigitH,
-			"a_total_ints":         profA.TotalInts,
-			"b_total_ints":         profB.TotalInts,
-			"a_coverage":           covA,
-			"b_coverage":           covB,
+			"value_dist":      cellDist.ValueD,
+			"prefix_dist":     cellDist.PrefixD,
+			"transition_dist": cellDist.TransitionD,
+			"position_dist":   cellDist.PositionD,
+			"last_digit_dist": cellDist.LastDigitD,
+			"a_total_ints":    profA.TotalInts,
+			"b_total_ints":    profB.TotalInts,
+			"a_coverage":      covA,
+			"b_coverage":      covB,
 		})
 		v.Cells = append(v.Cells, detail)
 
@@ -151,7 +155,7 @@ func (p numrandomProbe) Compare(pairs []CellPair, threshold float64, minN int) V
 	pooledDist, ok := stats.CompareNumRandomProfiles(globalA, globalB)
 	if !ok {
 		v.Verdict = "inconclusive"
-		v.Note = "池化整数分布为空，无法计算 Hellinger 距离"
+		v.Note = "池化整数分布为空，无法计算 U-Cos 距离"
 		return v
 	}
 
@@ -159,8 +163,9 @@ func (p numrandomProbe) Compare(pairs []CellPair, threshold float64, minN int) V
 	v.Statistic = &stat
 	r := ratio(StatDistance, stat, threshold)
 	v.Ratio = &r
-	v.Note = fmt.Sprintf("pooled H=%.4f (val=%.4f, pos=%.4f, dig=%.4f); %d/%d cells; ints A=%d B=%d",
-		pooledDist.Composite, pooledDist.ValueH, pooledDist.PositionH, pooledDist.LastDigitH,
+	v.Note = fmt.Sprintf("pooled U-Cos=%.4f (val=%.4f, pre=%.4f, tr=%.4f, pos=%.4f, dig=%.4f); %d/%d cells; ints A=%d B=%d",
+		pooledDist.Composite, pooledDist.ValueD, pooledDist.PrefixD, pooledDist.TransitionD,
+		pooledDist.PositionD, pooledDist.LastDigitD,
 		qualifying, len(pairs), globalA.TotalInts, globalB.TotalInts)
 	if stat > threshold {
 		v.Verdict = "fail"

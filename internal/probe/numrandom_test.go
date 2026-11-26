@@ -2,6 +2,7 @@ package probe
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,16 @@ func TestNumRandomIdenticalAndShifted(t *testing.T) {
 	}
 	if len(vDiff.Cells) != 1 || vDiff.Cells[0].Extra["a_total_ints"] != 300 {
 		t.Errorf("CellDetail.Extra 缺少证据字段: %+v", vDiff.Cells)
+	}
+	for _, k := range []string{"value_dist", "prefix_dist", "transition_dist", "position_dist", "last_digit_dist"} {
+		if _, ok := vDiff.Cells[0].Extra[k].(float64); !ok {
+			t.Errorf("CellDetail.Extra 缺少 %s: %+v", k, vDiff.Cells[0].Extra)
+		}
+	}
+	for _, tok := range []string{"pooled U-Cos=", "val=", "pre=", "tr=", "pos=", "dig="} {
+		if !strings.Contains(vDiff.Note, tok) {
+			t.Errorf("Verdict.Note 缺少 %q: %s", tok, vDiff.Note)
+		}
 	}
 }
 
